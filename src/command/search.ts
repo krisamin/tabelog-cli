@@ -99,7 +99,7 @@ export interface SearchOption {
   keyword?: string;
   sort?: Sort;
   page?: number;
-  /** How many consecutive list pages to read from `page`. 1 unless filters need a wider net. Max 5. */
+  /** How many consecutive list pages to read from `page`. 1, or 5 for a radius scan (which stops early). Max 10. */
   pages?: number;
   budget?: BudgetOption;
   /** Only restaurants with an online-bookable table at that date/time/party size. */
@@ -112,9 +112,13 @@ export interface SearchOption {
   minReviewCount?: number;
   /** Substrings every kept restaurant's English feature tags must contain ("non smoking", "credit card", "wi-fi"). */
   featureList?: string[];
+  /** Only restaurants carrying a Tabelog Award or Tabelog 100 badge. */
+  award?: boolean;
   /** Detail-table filters; each costs one page fetch per result. */
   privateRoom?: boolean;
   parking?: boolean;
+  /** Stop a radius scan once this many are kept, and cut the final list to it. */
+  limit?: number;
   /** Final ordering of the kept results. Defaults to the site order, or distance when near is given. */
   order?: Order;
   locale: Locale;
@@ -135,8 +139,10 @@ export interface SearchResult {
   itemList: SearchItem[];
 }
 
-const MAX_PAGE_COUNT = 5;
+const MAX_PAGE_COUNT = 10;
 const DETAIL_CONCURRENCY = 6;
+/** A radius scan stops once this many restaurants are kept, unless `limit` says otherwise. */
+const DEFAULT_LIMIT = 20;
 
 const applyArea = (query: URLSearchParams, area: AreaSuggest): void => {
   query.set("pal", area.pal);
@@ -257,7 +263,10 @@ export const search = async (option: SearchOption): Promise<SearchResult> => {
   }
   const firstPage = option.page && option.page > 1 ? Math.floor(option.page) : 1;
   // A radius search deserves a wider net by default: the list is in score order, not distance order.
-  const pageCount = Math.min(MAX_PAGE_COUNT, Math.max(1, Math.floor(option.pages ?? (option.near ? 2 : 1))));
+  const pageCount = Math.min(
+    MAX_PAGE_COUNT,
+    Math.max(1, Math.floor(option.pages ?? (option.near?.radiusM !== undefined ? 5 : 1))),
+  );
   const noteList: string[] = [];
 
   const query = new URLSearchParams();
@@ -315,100 +324,143 @@ export const search = async (option: SearchOption): Promise<SearchResult> => {
   if (option.budget) noteList.push(applyBudget(query, option.budget));
   if (option.vacancy) noteList.push(applyVacancy(query, option.vacancy));
 
-  // Read the list pages. Cards come back in the requested locale; the feature
-  // filter and the station-distance shortcut both need Tabelog's English
-  // wording, so on another locale the English pages are read as well and joined
-  // by restaurant id. A list page is one request against twenty for details, so
-  // this is cheap next to what it saves.
   const wantFeature = (option.featureList?.length ?? 0) > 0;
-  const wantEnglishCard =
-    option.locale !== "en" && (wantFeature || (option.near?.radiusM !== undefined && stationPoint !== undefined));
-  const pageList = Array.from({ length: pageCount }, (_, index) => firstPage + index);
-  const localePageList = await mapLimit(pageList, 3, (page) => fetchCardList(option.locale, query, page));
-  const englishCardMap = new Map<string, SearchItem>();
-  if (wantEnglishCard) {
-    const englishPageList = await mapLimit(pageList, 3, (page) => fetchCardList("en", query, page));
-    for (const page of englishPageList) for (const item of page.itemList) englishCardMap.set(item.id, item);
-  }
-
-  const first = localePageList[0];
-  if (!first) throw new Error("no list page fetched");
-  let itemList = localePageList.flatMap((page) => page.itemList);
-  const scannedCount = itemList.length;
-  if (pageCount > 1)
-    noteList.push(`read ${localePageList.length} pages (${scannedCount} restaurants) starting at page ${firstPage}`);
-
-  // Cheap filters first, from what the cards already say.
-  if (option.minRating !== undefined) {
-    const min = option.minRating;
-    itemList = itemList.filter((item) => item.rating !== undefined && item.rating >= min);
-    noteList.push(`rating >= ${min}`);
-  }
-  if (option.minReviewCount !== undefined) {
-    const min = option.minReviewCount;
-    itemList = itemList.filter((item) => (item.reviewCount ?? 0) >= min);
-    noteList.push(`reviews >= ${min}`);
-  }
-  if (wantFeature) {
-    const wantList = (option.featureList ?? []).map((text) => text.trim().toLowerCase()).filter(Boolean);
-    itemList = itemList.filter((item) => {
-      const tagText = (englishCardMap.get(item.id)?.featureList ?? item.featureList).join(" | ").toLowerCase();
-      return wantList.every((want) => tagText.includes(want));
-    });
-    noteList.push(`features: ${wantList.join(", ")}`);
-  }
-
-  // Before paying a page fetch per card, drop cards whose own "Station NNNm"
-  // proves they cannot be inside the radius: a restaurant within r of the
-  // point is within r + d(point, station) of that station.
+  const wantList = (option.featureList ?? []).map((text) => text.trim().toLowerCase()).filter(Boolean);
   const near = option.near;
-  if (near?.radiusM !== undefined && stationPoint) {
-    const bound = near.radiusM + stationPoint.distanceM;
-    const before = itemList.length;
-    itemList = itemList.filter((item) => {
-      const shown = stationDistanceOf(englishCardMap.get(item.id) ?? item);
-      // Only the station the point was measured from bounds the distance; a card
-      // measured from some other station says nothing about this radius.
-      const isSame = stationPoint.nameList.some((name) => sameStation(shown?.station ?? "", name));
-      if (!shown || !isSame) return true;
-      return shown.metre <= bound;
-    });
-    if (before !== itemList.length) {
-      noteList.push(`${before - itemList.length} skipped by their listed distance from ${stationPoint.name}`);
-    }
-  }
-
   const at = option.openAt === undefined ? undefined : parseJapanTime(option.openAt);
   const wantPrivateRoom = option.privateRoom === true;
   const wantParking = option.parking === true;
-  if ((near || at || wantPrivateRoom || wantParking) && itemList.length) {
-    itemList = await enrich(itemList, { near, at, wantPrivateRoom, wantParking });
-    if (near) {
-      itemList = itemList.filter(
-        (item) => item.distanceM !== undefined && (near.radiusM === undefined || item.distanceM <= near.radiusM),
-      );
-      noteList.push(
-        `near: ${near.point.latitude},${near.point.longitude}${near.radiusM === undefined ? "" : ` within ${near.radiusM}m`}`,
-      );
+  const wantDetail = near !== undefined || at !== undefined || wantPrivateRoom || wantParking;
+  // The feature filter and the station-distance shortcut both need Tabelog's
+  // English wording, so on another locale the English page is read as well and
+  // joined by restaurant id. One list request against twenty detail requests.
+  const wantEnglishCard =
+    option.locale !== "en" && (wantFeature || (near?.radiusM !== undefined && stationPoint !== undefined));
+  const stopAt = option.limit ?? DEFAULT_LIMIT;
+
+  let firstUrl = "";
+  let firstCount: ReturnType<typeof parseCount> = { from: undefined, to: undefined, total: undefined };
+  let scannedCount = 0;
+  let stationSkipped = 0;
+  let closedDropped = 0;
+  let pageRead = 0;
+
+  /** One list page through every filter. Returns how many cards the page had (0 means past the end). */
+  const processPage = async (page: number): Promise<{ cardCount: number; keptList: SearchItem[] }> => {
+    const [local, english] = await Promise.all([
+      fetchCardList(option.locale, query, page),
+      wantEnglishCard ? fetchCardList("en", query, page) : Promise.resolve(undefined),
+    ]);
+    if (page === firstPage) {
+      firstUrl = local.url;
+      firstCount = local.count;
     }
-    if (at) {
-      const dropped = itemList.filter((item) => item.openStatus === "closed").length;
-      itemList = itemList.filter((item) => item.openStatus !== "closed");
-      noteList.push(`open at ${at.label}: ${dropped} closed dropped, "unknown" kept (no parsable hours)`);
+    pageRead += 1;
+    const englishCardMap = new Map((english?.itemList ?? []).map((item) => [item.id, item]));
+    const englishOf = (item: SearchItem): SearchItem => englishCardMap.get(item.id) ?? item;
+
+    let itemList = local.itemList;
+    scannedCount += itemList.length;
+
+    // Cheap filters first, from what the cards already say.
+    if (option.minRating !== undefined) {
+      const min = option.minRating;
+      itemList = itemList.filter((item) => item.rating !== undefined && item.rating >= min);
     }
-    if (wantPrivateRoom) {
-      itemList = itemList.filter((item) => isAvailable(item.privateRoom));
-      noteList.push("private room: available");
+    if (option.minReviewCount !== undefined) {
+      const min = option.minReviewCount;
+      itemList = itemList.filter((item) => (item.reviewCount ?? 0) >= min);
     }
-    if (wantParking) {
-      itemList = itemList.filter((item) => isAvailable(item.parking));
-      noteList.push("parking: available");
+    if (option.award) itemList = itemList.filter((item) => item.awardList.length > 0);
+    if (wantFeature) {
+      itemList = itemList.filter((item) => {
+        const tagText = englishOf(item).featureList.join(" | ").toLowerCase();
+        return wantList.every((want) => tagText.includes(want));
+      });
     }
+
+    // Before paying a page fetch per card, drop cards whose own "Station NNNm"
+    // proves they cannot be inside the radius: a restaurant within r of the
+    // point is within r + d(point, station) of that station. Only the station
+    // the point was measured from bounds anything; a card measured from some
+    // other station says nothing about this radius.
+    if (near?.radiusM !== undefined && stationPoint) {
+      const bound = near.radiusM + stationPoint.distanceM;
+      const station = stationPoint;
+      const before = itemList.length;
+      itemList = itemList.filter((item) => {
+        const shown = stationDistanceOf(englishOf(item));
+        if (!shown || !station.nameList.some((name) => sameStation(shown.station, name))) return true;
+        return shown.metre <= bound;
+      });
+      stationSkipped += before - itemList.length;
+    }
+
+    if (wantDetail && itemList.length) {
+      itemList = await enrich(itemList, { near, at, wantPrivateRoom, wantParking });
+      if (near) {
+        itemList = itemList.filter(
+          (item) => item.distanceM !== undefined && (near.radiusM === undefined || item.distanceM <= near.radiusM),
+        );
+      }
+      if (at) {
+        const before = itemList.length;
+        itemList = itemList.filter((item) => item.openStatus !== "closed");
+        closedDropped += before - itemList.length;
+      }
+      if (wantPrivateRoom) itemList = itemList.filter((item) => isAvailable(item.privateRoom));
+      if (wantParking) itemList = itemList.filter((item) => isAvailable(item.parking));
+    }
+    return { cardCount: local.itemList.length, keptList: itemList };
+  };
+
+  // A radius search walks pages one at a time and stops as soon as it has
+  // enough, because the list is in score order and most of a page can be
+  // outside the circle. Everything else reads its pages concurrently.
+  let itemList: SearchItem[] = [];
+  let stoppedEarly = false;
+  if (near?.radiusM !== undefined) {
+    for (let page = firstPage; page < firstPage + pageCount; page++) {
+      const result = await processPage(page);
+      itemList.push(...result.keptList);
+      if (result.cardCount === 0) break;
+      if (itemList.length >= stopAt) {
+        stoppedEarly = page < firstPage + pageCount - 1;
+        break;
+      }
+    }
+  } else {
+    const pageList = Array.from({ length: pageCount }, (_, index) => firstPage + index);
+    const resultList = await mapLimit(pageList, 3, processPage);
+    itemList = resultList.flatMap((result) => result.keptList);
   }
+
+  if (pageRead > 1 || pageCount > 1) {
+    noteList.push(
+      `read ${pageRead} page${pageRead === 1 ? "" : "s"} (${scannedCount} restaurants) from page ${firstPage}${
+        stoppedEarly ? `, stopped once ${stopAt} were kept` : ""
+      }`,
+    );
+  }
+  if (option.minRating !== undefined) noteList.push(`rating >= ${option.minRating}`);
+  if (option.minReviewCount !== undefined) noteList.push(`reviews >= ${option.minReviewCount}`);
+  if (option.award) noteList.push("awarded (Tabelog Award or Tabelog 100) only");
+  if (wantFeature) noteList.push(`features: ${wantList.join(", ")}`);
+  if (stationSkipped && stationPoint) {
+    noteList.push(`${stationSkipped} skipped by their listed distance from ${stationPoint.name}`);
+  }
+  if (near) {
+    noteList.push(
+      `near: ${near.point.latitude},${near.point.longitude}${near.radiusM === undefined ? "" : ` within ${near.radiusM}m`}`,
+    );
+  }
+  if (at) noteList.push(`open at ${at.label}: ${closedDropped} closed dropped, "unknown" kept (no parsable hours)`);
+  if (wantPrivateRoom) noteList.push("private room: available");
+  if (wantParking) noteList.push("parking: available");
 
   // The list is in score order over the whole area, so a tight radius keeps few
   // of any one page. Say so rather than letting a short list read as "that is all".
-  if (near?.radiusM !== undefined && itemList.length < 5 && localePageList.length < MAX_PAGE_COUNT) {
+  if (near?.radiusM !== undefined && itemList.length < 5 && pageRead < MAX_PAGE_COUNT && !stoppedEarly) {
     noteList.push(
       `only ${itemList.length} within the radius on these pages; raise pages (up to ${MAX_PAGE_COUNT}) to scan further`,
     );
@@ -424,14 +476,19 @@ export const search = async (option: SearchOption): Promise<SearchResult> => {
   }
   if (order !== "site") noteList.push(`ordered by ${order}`);
 
+  if (option.limit !== undefined && itemList.length > option.limit) {
+    noteList.push(`showing the first ${option.limit} of ${itemList.length} kept`);
+    itemList = itemList.slice(0, option.limit);
+  }
+
   return {
-    url: first.url,
+    url: firstUrl,
     resolvedArea,
     resolvedGenre,
     noteList,
-    ...first.count,
+    ...firstCount,
     page: firstPage,
-    pageCount: localePageList.length,
+    pageCount: pageRead,
     scannedCount,
     itemList,
   };

@@ -40,6 +40,18 @@ describe("japan time", () => {
     expect(dayIndexOf("Wed")).toBe(3);
     expect(dayIndexOf("Public Holiday")).toBeUndefined();
   });
+
+  test("weekday labels from every locale map to the same index", () => {
+    // kr, tw/cn, th as the hours table prints them; Japanese long form for good measure.
+    expect(dayIndexOf("\uc218")).toBe(3);
+    expect(dayIndexOf("\u661f\u671f\u4e09")).toBe(3);
+    expect(dayIndexOf("\u661f\u671f\u65e5")).toBe(0);
+    expect(dayIndexOf("\u0e1e\u0e38\u0e18")).toBe(3);
+    expect(dayIndexOf("\u0e2d\u0e32\u0e17\u0e34\u0e15\u0e22\u0e4c")).toBe(0);
+    expect(dayIndexOf("\u6c34\u66dc\u65e5")).toBe(3);
+    expect(dayIndexOf("\uc218\uc694\uc77c")).toBe(3);
+    expect(dayIndexOf("\uacf5\ud734\uc77c")).toBeUndefined();
+  });
 });
 
 describe("business hours", () => {

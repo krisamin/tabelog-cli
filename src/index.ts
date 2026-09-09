@@ -42,8 +42,8 @@ Usage:
                  [--budget-meal ${MEAL_LIST.join("|")}] [--budget-min <yen>] [--budget-max <yen>]
                  [--vacancy] [--vacancy-date <YYYY-MM-DD>] [--vacancy-time <HH:MM>] [--vacancy-people <n>]
                  [--near <lat,lng>] [--radius-m <m>] [--open-at now|"<YYYY-MM-DD HH:MM>"]
-                 [--pages <1-5>] [--min-rating <n>] [--min-review-count <n>] [--feature <a,b>]
-                 [--private-room] [--parking] [--order ${ORDER_LIST.join("|")}]
+                 [--pages <1-10>] [--limit <n>] [--min-rating <n>] [--min-review-count <n>]
+                 [--feature <a,b>] [--award] [--private-room] [--parking] [--order ${ORDER_LIST.join("|")}]
                                             list restaurants (20 per page, Tabelog score order by default;
                                             --near alone picks the nearest station as the area)
   tabelog detail <url|id>                   restaurant page: score, address, weekly hours, prices, seats, ...
@@ -96,6 +96,7 @@ const VALUE_FLAG_SET = new Set([
   "radius-m",
   "open-at",
   "pages",
+  "limit",
   "min-rating",
   "min-review-count",
   "feature",
@@ -243,8 +244,10 @@ const main = async (): Promise<void> => {
           ?.split(",")
           .map((item) => item.trim())
           .filter(Boolean),
+        award: flagMap.award === true,
         privateRoom: flagMap["private-room"] === true,
         parking: flagMap.parking === true,
+        limit: num(flagMap.limit, "limit"),
         order: choice(flagMap.order, "order", ORDER_LIST, isOrder),
         locale,
       });

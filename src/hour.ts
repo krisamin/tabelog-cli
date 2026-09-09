@@ -6,7 +6,8 @@ import { dayIndexOf, dayName, formatMinute, type WallClock } from "./time";
  * rstinfo-table__business-item per group of days, each with a title ("Mon,
  * Tue, Thu" or "Sat, Sun, Public Holiday") and one or more ranges ("5:00 PM -
  * 10:00 PM", optionally followed by "L.O. 9:30 PM") or the word "Closed".
- * Only the English page is parsed; day names and AM/PM are locale-specific.
+ * Every locale uses the same markup; day names, the "closed" word and the
+ * list separator differ, and 24-hour times appear outside English.
  */
 
 export interface HourRange {
@@ -47,7 +48,7 @@ const parseRange = (text: string): HourRange | undefined => {
 
 const parseDayList = (title: string): number[] => {
   const list: number[] = [];
-  for (const part of title.split(/[,\u3001]/)) {
+  for (const part of title.split(/[,\u3001\uff0c]/)) {
     const range = /^\s*([A-Za-z]{3})[a-z]*\s*[-\u2013]\s*([A-Za-z]{3})/.exec(part);
     if (range) {
       const from = dayIndexOf(range[1] ?? "");
@@ -66,6 +67,15 @@ const parseDayList = (title: string): number[] => {
   return list;
 };
 
+/** "Closed" as each locale prints it in a day row: en, kr, tw, cn, th. */
+const CLOSED_WORD_LIST = [
+  "closed",
+  "\uc815\uae30\ud734\uc77c",
+  "\u516c\u4f11\u65e5",
+  "\u5b9a\u671f\u4f11\u606f\u65e5",
+  "\u0e1b\u0e34\u0e14",
+];
+
 export const parseHourList = (html: string): HourGroup[] => {
   const start = html.indexOf('<ul class="rstinfo-table__business-list">');
   if (start < 0) return [];
@@ -78,9 +88,9 @@ export const parseHourList = (html: string): HourGroup[] => {
   )) {
     const title = textOf(match[1] ?? "");
     const textList = [
-      ...(match[2] ?? "").matchAll(/<li class="rstinfo-table__business-dtl-text">([\s\S]*?)<\/li>/g),
+      ...(match[2] ?? "").matchAll(/<li class="rstinfo-table__business-dtl-text[^"]*">([\s\S]*?)<\/li>/g),
     ].map((item) => textOf(item[1] ?? ""));
-    const closed = textList.some((text) => /^closed$/i.test(text));
+    const closed = textList.some((text) => CLOSED_WORD_LIST.some((word) => text.trim().toLowerCase() === word));
     const rangeList = textList.map(parseRange).filter((range): range is HourRange => range !== undefined);
     groupList.push({ title, dayList: parseDayList(title), closed, rangeList });
   }

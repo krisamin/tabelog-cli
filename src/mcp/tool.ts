@@ -111,7 +111,7 @@ const LOCALE_PROPERTY = {
     type: "string",
     enum: [...LOCALE_LIST],
     description:
-      "Page language. en (default) has the most complete translations; kr gives Korean names and text. Filters resolve the same way regardless.",
+      "Page language: en (default), kr, tw, cn, th. Filters resolve the same way regardless; en has the most complete translations.",
   },
 };
 
@@ -184,8 +184,14 @@ export const TOOL_LIST: ToolDefinition[] = [
         pages: {
           type: "integer",
           minimum: 1,
-          maximum: 5,
-          description: "How many consecutive pages to read from page. Defaults to 1, or 2 when near is given.",
+          maximum: 10,
+          description:
+            "How many consecutive pages to read from page. Defaults to 1, or 5 for a radius search, which walks pages one at a time and stops early once `limit` restaurants are inside the radius.",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          description: "Stop a radius scan once this many are kept (default 20) and cut the final list to this many.",
         },
         budget_meal: {
           type: "string",
@@ -230,7 +236,12 @@ export const TOOL_LIST: ToolDefinition[] = [
           type: "array",
           items: { type: "string" },
           description:
-            'English feature tags every result must carry, matched as substrings: "non smoking", "credit card", "wi-fi", "multilingual menu", "children welcome", "vegetarian", "halal", "menu with photos".',
+            'English feature tags every result must carry, matched as substrings against the card tags Tabelog prints: "Non smoking", "Smoking allowed", "Credit card accepted", "Wi-Fi available", "Multilingual menu", "Menu with photos", "Children welcome", "Kids menu available", and where present "Vegetarian", "Halal", "Gluten-free", "Digital menu". Private rooms and parking are not card tags; use private_room / parking.',
+        },
+        award: {
+          type: "boolean",
+          description:
+            "Only restaurants carrying a Tabelog Award (Gold/Silver/Bronze) or Tabelog 100 (Hyakumeiten) badge.",
         },
         private_room: { type: "boolean", description: "Only restaurants whose page lists private rooms as available." },
         parking: { type: "boolean", description: "Only restaurants whose page lists parking as available." },
@@ -259,8 +270,10 @@ export const TOOL_LIST: ToolDefinition[] = [
           minRating: optionalNumber(input, "min_rating"),
           minReviewCount: optionalNumber(input, "min_review_count"),
           featureList: stringList(input, "feature"),
+          award: flag(input, "award"),
           privateRoom: flag(input, "private_room"),
           parking: flag(input, "parking"),
+          limit: optionalNumber(input, "limit"),
           order: oneOf(input, "order", ORDER_LIST, isOrder),
           locale: localeOf(input),
         }),

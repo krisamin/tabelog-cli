@@ -1,4 +1,4 @@
-import { attrOf, classText, splitBy } from "../html";
+import { attrOf, classText, parsePagination, splitBy } from "../html";
 import { fetchHtml, type Locale } from "../http";
 import { type PhotoMode, photoUrl, resolveRestaurant } from "../url";
 
@@ -15,6 +15,10 @@ export interface PhotoResult {
   url: string;
   page: number;
   mode: PhotoMode;
+  /** Last page Tabelog offers, when the pager is present. */
+  lastPage: number | undefined;
+  /** Set when the asked-for page does not exist; itemList is then empty. */
+  note: string | undefined;
   itemList: PhotoItem[];
 }
 
@@ -50,5 +54,15 @@ export const parsePhoto = (
   const itemList = splitBy(body, ITEM_MARKER)
     .map(parseItem)
     .filter((item): item is PhotoItem => item !== undefined);
-  return { ...at, itemList };
+  const end = pastEnd(body, at.page);
+  return { ...at, ...end, itemList: end.note ? [] : itemList };
+};
+
+/** Tabelog serves page 1 again for a page past the end; that must not pass as page N. */
+const pastEnd = (body: string, page: number): { lastPage: number | undefined; note: string | undefined } => {
+  const { current, last } = parsePagination(body);
+  if (current !== undefined && current !== page) {
+    return { lastPage: last, note: `Page ${page} does not exist; the last page is ${last ?? current}.` };
+  }
+  return { lastPage: last, note: undefined };
 };

@@ -1,6 +1,6 @@
 {
   "name": "@krisamin/tabelog-cli",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Tabelog CLI and MCP server: search, filter and read Japanese restaurants without a browser",
   "license": "MIT",
   "author": "krisamin",
@@ -17,7 +17,8 @@
     "lint": "biome check src/ test/",
     "lint:fix": "biome check --write src/ test/",
     "test": "bun test",
-    "check": "bun run typecheck && bun run lint && bun test"
+    "check": "bun run typecheck && bun run lint && bun test",
+    "fixture:refresh": "bun test/fixture-refresh.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.2",

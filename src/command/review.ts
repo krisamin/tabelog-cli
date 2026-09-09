@@ -1,4 +1,4 @@
-import { attrOf, classText, pick, splitBy, textOf, toNumber } from "../html";
+import { attrOf, classText, parsePagination, pick, splitBy, textOf, toNumber } from "../html";
 import { fetchHtml, type Locale } from "../http";
 import { resolveRestaurant, reviewListUrl } from "../url";
 
@@ -38,6 +38,10 @@ export interface ReviewItem {
 export interface ReviewResult {
   url: string;
   page: number;
+  /** Last page Tabelog offers, when the pager is present. */
+  lastPage: number | undefined;
+  /** Set when the asked-for page does not exist; itemList is then empty. */
+  note: string | undefined;
   itemList: ReviewItem[];
 }
 
@@ -89,7 +93,17 @@ export const review = async (input: string, option: ReviewOption): Promise<Revie
 };
 
 export const parseReviewList = (body: string, at: { url: string; page: number }): ReviewResult => {
-  return { ...at, itemList: splitBy(body, CARD_MARKER).map(parseCard) };
+  const { current, last } = parsePagination(body);
+  // Tabelog serves page 1 again for a page past the end; that must not pass as page N.
+  if (current !== undefined && current !== at.page) {
+    return {
+      ...at,
+      lastPage: last,
+      note: `Page ${at.page} does not exist; the last page is ${last ?? current}.`,
+      itemList: [],
+    };
+  }
+  return { ...at, lastPage: last, note: undefined, itemList: splitBy(body, CARD_MARKER).map(parseCard) };
 };
 
 /**

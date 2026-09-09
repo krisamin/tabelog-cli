@@ -122,7 +122,12 @@ export const renderDetail = (item: Detail): string => {
 };
 
 export const renderReview = (result: ReviewResult): string => {
-  const headList = [`page ${result.page}`, result.url, ""];
+  const headList = defined([
+    `page ${result.page}${result.lastPage === undefined ? "" : ` of ${result.lastPage}`}`,
+    result.note,
+    result.url,
+    "",
+  ]);
   const bodyList = result.itemList.map((item) => {
     return defined([
       `${show(item.rating)} ${show(item.time, "")}  ${show(item.reviewer)} (${show(item.reviewerPostCount, "?")} posts)  ${show(item.visited, "")} ${show(item.visitCount, "")}`,
@@ -180,8 +185,13 @@ export const renderRating = (result: RatingResult): string => {
 };
 
 export const renderPhoto = (result: PhotoResult): string => {
-  const headList = [`page ${result.page}, ${result.mode}, ${result.itemList.length} photos`, result.url, ""];
-  if (!result.itemList.length) return [...headList, "No photos on this page."].join("\n");
+  const headList = defined([
+    `page ${result.page}${result.lastPage === undefined ? "" : ` of ${result.lastPage}`}, ${result.mode}, ${result.itemList.length} photos`,
+    result.note,
+    result.url,
+    "",
+  ]);
+  if (!result.itemList.length) return [...headList, result.note ? "" : "No photos on this page."].join("\n").trimEnd();
   return [
     ...headList,
     ...result.itemList.map((item) =>

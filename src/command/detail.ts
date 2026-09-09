@@ -31,7 +31,7 @@ export interface Detail {
   latitude: number | undefined;
   longitude: number | undefined;
   imageUrl: string | undefined;
-  /** Structured business hours, parsed from the English page only (empty on other locales). */
+  /** Structured business hours. Day names are normalised to weekday indexes whatever the page language. */
   hourList: HourGroup[];
   infoList: InfoRow[];
 }
@@ -125,7 +125,7 @@ const fetchDetail = async (ref: RestaurantRef, locale: Locale): Promise<Detail> 
 };
 
 export const parseDetail = (body: string, at: { id: string; url: string; locale: Locale }): Detail => {
-  const { id, url, locale } = at;
+  const { id, url } = at;
   const ld = jsonLdList(body).find((block) => block["@type"] === "Restaurant") as LdRestaurant | undefined;
   const infoList = parseInfoTable(body);
   if (!ld && !infoList.length) {
@@ -148,7 +148,7 @@ export const parseDetail = (body: string, at: { id: string; url: string; locale:
     latitude: typeof ld?.geo?.latitude === "number" ? ld.geo.latitude : undefined,
     longitude: typeof ld?.geo?.longitude === "number" ? ld.geo.longitude : undefined,
     imageUrl: asString(ld?.image) === undefined ? undefined : decodeEntity(ld?.image ?? ""),
-    hourList: locale === "en" ? parseHourList(body) : [],
+    hourList: parseHourList(body),
     infoList,
   };
 };

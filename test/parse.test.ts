@@ -7,6 +7,7 @@ import { parsePhoto } from "../src/command/photo";
 import { parseRating } from "../src/command/rating";
 import { parseReviewList, parseReviewRead } from "../src/command/review";
 import { parseSeating } from "../src/command/seating";
+import { parsePagination } from "../src/html";
 import { fixture } from "./fixture";
 
 /**
@@ -156,8 +157,10 @@ describe("detail", () => {
     const lineList = award.split("\n").filter(Boolean);
     expect(lineList.length).toBe(new Set(lineList).size);
     expect(award).not.toContain("\u767e\u540d\u5e97 \u9078\u51fa\u5e97");
-    // Hours are English-only markup, so another locale reports none rather than guessing.
-    expect(kr.hourList).toHaveLength(0);
+    // Korean day names resolve to the same weekday indexes as the English page.
+    expect(kr.hourList).toHaveLength(1);
+    expect(kr.hourList[0]?.dayList).toEqual([1, 2, 3, 4, 5, 6, 0]);
+    expect(kr.hourList[0]?.rangeList[0]?.close).toBe(29 * 60);
   });
 });
 
@@ -178,6 +181,15 @@ describe("reviews", () => {
     for (const item of result.itemList) {
       expect(item.reviewer ?? "").not.toContain("Japan");
     }
+  });
+
+  test("a page past the end is reported, not served as page N", () => {
+    // The list fixture is page 1; asking it to be page 5 must be caught by the pager.
+    const wrong = parseReviewList(fixture("review-list.html"), { url: "x", page: 5 });
+    expect(wrong.itemList).toHaveLength(0);
+    expect(wrong.note).toContain("does not exist");
+    expect(wrong.lastPage).toBe(22);
+    expect(result.lastPage).toBe(22);
   });
 
   test("one review page carries every visit with full text", () => {
@@ -242,6 +254,14 @@ describe("rating", () => {
 describe("photo", () => {
   // /en/osaka/A2701/A270202/27000401/dtlphotolst/
   const result = parsePhoto(fixture("photo.html"), { id: "27000401", url: "x", page: 1, mode: "all" });
+
+  test("the pager gives the last page and catches an overflow", () => {
+    expect(result.lastPage).toBe(374);
+    expect(parsePagination(fixture("photo.html"))).toEqual({ current: 1, last: 374 });
+    const wrong = parsePhoto(fixture("photo.html"), { id: "27000401", url: "x", page: 999, mode: "all" });
+    expect(wrong.itemList).toHaveLength(0);
+    expect(wrong.note).toContain("374");
+  });
 
   test("reads 640px images with captions", () => {
     expect(result.itemList).toHaveLength(20);

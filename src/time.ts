@@ -79,9 +79,53 @@ export const toSvt = (input: string): string => {
 
 export const dayName = (day: number): string => DAY_NAME_LIST[day] ?? "?";
 
+/**
+ * Weekday labels as each Tabelog locale prints them in the hours table. English
+ * matches on the first three letters ("Mon", "Monday"); the others are exact
+ * after stripping the shared prefix ("星期", "วัน").
+ */
+const DAY_LABEL_MAP: Record<string, number> = {
+  一: 1,
+  二: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  日: 0,
+  天: 0,
+  月: 1,
+  火: 2,
+  水: 3,
+  木: 4,
+  金: 5,
+  土: 6,
+  월: 1,
+  화: 2,
+  수: 3,
+  목: 4,
+  금: 5,
+  토: 6,
+  일: 0,
+  จันทร์: 1,
+  อังคาร: 2,
+  พุธ: 3,
+  พฤหัสบดี: 4,
+  ศุกร์: 5,
+  เสาร์: 6,
+  อาทิตย์: 0,
+};
+
 export const dayIndexOf = (name: string): number | undefined => {
-  const index = DAY_NAME_LIST.findIndex((item) => item.toLowerCase() === name.trim().slice(0, 3).toLowerCase());
-  return index < 0 ? undefined : index;
+  const trimmed = name.trim();
+  if (!trimmed) return undefined;
+  const english = DAY_NAME_LIST.findIndex((item) => item.toLowerCase() === trimmed.slice(0, 3).toLowerCase());
+  if (english >= 0) return english;
+  const bare = trimmed
+    .replace(/^星期/, "")
+    .replace(/^週/, "")
+    .replace(/^วัน/, "")
+    .replace(/曜日$|요일$/, "");
+  return DAY_LABEL_MAP[bare];
 };
 
 export const formatMinute = (minute: number): string => {

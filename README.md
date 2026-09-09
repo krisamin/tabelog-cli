@@ -2,7 +2,7 @@
 
 A Tabelog CLI and MCP server. Tabelog has no public API and the Japanese site
 sits behind a Cloudflare challenge that rejects anything but a real browser,
-but the inbound locales (`tabelog.com/en`, `/kr`, `/tw`, `/th`) are served as
+but the inbound locales (`tabelog.com/en`, `/kr`, `/tw`, `/cn`, `/th`) are served as
 plain server-rendered HTML with schema.org JSON-LD. This reads those. No
 browser, no headless Chrome, no runtime dependencies.
 
@@ -47,13 +47,15 @@ tabelog search --area Ginza --genre sushi --budget-meal lunch --budget-min 5000 
 tabelog search --area Sapporo --genre sushi --vacancy-date 2026-09-11 --vacancy-time 19:00 --vacancy-people 1
 
 # radius around a point. --near alone picks the area itself: the nearest railway
-# station Tabelog knows. --pages widens the net, since the list is score-ordered
+# station Tabelog knows. Pages are walked one at a time (5 by default, up to 10)
+# and the walk stops once --limit restaurants (20) are inside the circle
 tabelog search --near 43.0553,141.3532 --radius-m 300 --genre sushi
-tabelog search --near 34.6687,135.5013 --radius-m 200 --pages 3 --open-at now
+tabelog search --near 34.6687,135.5013 --radius-m 200 --open-at now --limit 10
 
 # open at a Japan wall-clock time, and the cheap card-level filters
 tabelog search --area Susukino --open-at "2026-09-12 19:00" --min-rating 3.5 --min-review-count 100
 tabelog search --area Susukino --genre ジンギスカン --feature "non smoking,credit card" --order review_count
+tabelog search --area Susukino --award            # Tabelog Award / Tabelog 100 holders only
 
 # facilities from each restaurant's own page
 tabelog search --area Sapporo --genre sushi --private-room --parking
@@ -108,13 +110,17 @@ than areas: the index has Tabelog's own labels, so `串カツ` resolves where
 instead, and the result header says so. Landmarks (Dotonbori) are not areas;
 use the nearest station or pass `--near` with its coordinates.
 
-Times are Japan time. `--open-at` reads the English page's weekly hours; a
-restaurant with no parsable hours is kept and marked unknown, never dropped.
+Times are Japan time. `--open-at` reads each restaurant's weekly hours (any
+locale; day names are normalised); a restaurant with no parsable hours is kept
+and marked unknown, never dropped.
 `--near`, `--open-at`, `--private-room` and `--parking` each read every
-result's page, roughly two seconds per page of twenty. Distances are
-straight-line, and the radius applies only to the pages actually read: Tabelog
-orders the list by score, not by distance, so a tight radius keeps few per page
-and the header says when raising `--pages` is worth it.
+result's page, roughly two seconds per page of twenty, once per restaurant per
+process. Distances are straight-line and the radius applies only to the pages
+actually read: Tabelog orders the list by score, not by distance, so a radius
+search walks pages sequentially and stops when `--limit` are inside; the
+header says how many pages it read and when raising `--pages` is worth it.
+Page numbers past the end of a list (photos, reviews) are reported as such
+rather than silently serving page 1 again.
 
 ## MCP
 
@@ -166,8 +172,9 @@ each restaurant once. Nothing is written to disk.
 ## Tests
 
 ```bash
-bun test          # parsers against captured pages, plus the time and geo logic
-bun run check     # typecheck, lint and test
+bun test                 # parsers against captured pages, plus the time and geo logic
+bun run check            # typecheck, lint and test
+bun run fixture:refresh  # re-capture every fixture from the live site
 ```
 
 The fixtures under `test/fixture/` are real Tabelog pages, gzipped. The tests

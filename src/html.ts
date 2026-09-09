@@ -101,3 +101,17 @@ export const jsonLdList = (html: string): Record<string, unknown>[] => {
   }
   return list;
 };
+
+/**
+ * Tabelog's pager (`c-pagination`): the current page is a `<strong ...
+ * is-current>` and the last page is the largest number shown. Asking for a page
+ * past the end silently serves page 1 again, so callers compare `current`
+ * with what they asked for instead of trusting the URL.
+ */
+export const parsePagination = (html: string): { current: number | undefined; last: number | undefined } => {
+  const current = toNumber(pick(html, /c-pagination__num[^"]*is-current[^>]*>\s*([\d,]+)\s*</));
+  const numberList = pickAll(html, /c-pagination__num[^>]*>\s*([\d,]+)\s*</g)
+    .map((text) => toNumber(text))
+    .filter((value): value is number => value !== undefined);
+  return { current, last: numberList.length ? Math.max(...numberList) : undefined };
+};
