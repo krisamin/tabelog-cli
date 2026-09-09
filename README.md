@@ -52,7 +52,10 @@ tabelog search --area Sannomiya --genre ramen --json
 
 Area and genre names are matched against the suggest index, which knows English
 and Japanese names only. A Korean area name returns nothing; use the English or
-Japanese one and switch `--locale kr` for Korean output.
+Japanese one and switch `--locale kr` for Korean output. Genres are pickier
+than areas: the index has Tabelog's own labels, so `串カツ` resolves where
+`kushikatsu` does not. A genre that fails to resolve is searched as a keyword
+instead, and the result header says so.
 
 ## MCP
 

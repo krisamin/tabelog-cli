@@ -122,15 +122,24 @@ export const search = async (option: SearchOption): Promise<SearchResult> => {
     query.set("area_id", area.id);
   }
 
+  // The genre index only knows Tabelog's own labels ("Kushi-age", not
+  // "kushikatsu"); Japanese names resolve far more often. When a genre is not
+  // in the index it is still a useful search word, so it falls back to sw and
+  // the result says so rather than failing the whole search.
+  const wordList = option.keyword ? [option.keyword.trim()] : [];
   let resolvedGenre: string | undefined;
   if (option.genre) {
     const genre = await suggestGenre(option.genre);
-    if (!genre) throw new Error(`No Tabelog genre matches "${option.genre}". Try an English or Japanese cuisine name.`);
-    resolvedGenre = `${genre.name} (${genre.code})`;
-    query.set("genre_name", genre.code);
+    if (genre) {
+      resolvedGenre = `${genre.name} (${genre.code})`;
+      query.set("genre_name", genre.code);
+    } else {
+      resolvedGenre = `"${option.genre}" is not a Tabelog genre; searched as a keyword instead`;
+      wordList.push(option.genre.trim());
+    }
   }
 
-  if (option.keyword) query.set("sw", option.keyword.trim());
+  if (wordList.length) query.set("sw", wordList.join(" "));
 
   const path = page > 1 ? `rstLst/${page}/` : "rstLst/";
   const url = `${localeUrl(option.locale, path)}?${query.toString()}`;

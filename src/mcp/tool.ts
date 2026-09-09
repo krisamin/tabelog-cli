@@ -78,7 +78,8 @@ export const TOOL_LIST: ToolDefinition[] = [
         },
         genre: {
           type: "string",
-          description: "Cuisine or dish type, in English or Japanese. Resolved to Tabelog's genre code.",
+          description:
+            "Cuisine or dish type. Resolved to Tabelog's genre code; the index knows Tabelog's own English labels and Japanese names (串カツ resolves, kushikatsu does not). An unresolved genre is searched as a keyword and the result says so.",
         },
         keyword: {
           type: "string",
