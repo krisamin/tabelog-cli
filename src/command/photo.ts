@@ -40,8 +40,15 @@ export const photo = async (
   const mode = option.mode ?? "all";
   const url = photoUrl(ref, option.locale, { page, mode });
   const { body } = await fetchHtml(url);
+  return parsePhoto(body, { id: ref.id, url, page, mode });
+};
+
+export const parsePhoto = (
+  body: string,
+  at: { id: string; url: string; page: number; mode: PhotoMode },
+): PhotoResult => {
   const itemList = splitBy(body, ITEM_MARKER)
     .map(parseItem)
     .filter((item): item is PhotoItem => item !== undefined);
-  return { id: ref.id, url, page, mode, itemList };
+  return { ...at, itemList };
 };

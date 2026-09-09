@@ -25,15 +25,26 @@ const refFromPath = (pathOrUrl: string): RestaurantRef | undefined => {
  * Accepts a Tabelog restaurant URL (any locale or the Japanese site), a bare
  * path, or a numeric restaurant id.
  */
+/** An id maps to one path forever, and resolving it costs a redirect fetch. */
+const refCache = new Map<string, RestaurantRef>();
+
 export const resolveRestaurant = async (input: string): Promise<RestaurantRef> => {
   const trimmed = input.trim();
   const direct = refFromPath(trimmed);
-  if (direct) return direct;
+  if (direct) {
+    refCache.set(direct.id, direct);
+    return direct;
+  }
 
   if (/^\d+$/.test(trimmed)) {
+    const cached = refCache.get(trimmed);
+    if (cached) return cached;
     const location = await fetchRedirectLocation(`${BASE_URL}/en/rstdtl/${trimmed}/`);
     const resolved = location === undefined ? undefined : refFromPath(location);
-    if (resolved) return resolved;
+    if (resolved) {
+      refCache.set(resolved.id, resolved);
+      return resolved;
+    }
     throw new Error(`Restaurant ${trimmed} did not resolve to a Tabelog page.`);
   }
 

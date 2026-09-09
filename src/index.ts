@@ -1,28 +1,34 @@
 #!/usr/bin/env bun
 import pkg from "../package.json" with { type: "json" };
+import { course } from "./command/course";
 import { detail } from "./command/detail";
 import { locate } from "./command/locate";
 import { menu } from "./command/menu";
 import { nearby } from "./command/nearby";
 import { photo } from "./command/photo";
+import { ranking } from "./command/ranking";
 import { rating } from "./command/rating";
 import { isUseType, review, reviewRead, USE_TYPE_LIST } from "./command/review";
 import { isMeal, isOrder, isSort, MEAL_LIST, ORDER_LIST, SORT_LIST, search } from "./command/search";
+import { seating } from "./command/seating";
 import { suggest } from "./command/suggest";
 import { vacancy } from "./command/vacancy";
 import { parseGeoPoint } from "./geo";
 import { DEFAULT_LOCALE, isLocale, LOCALE_LIST, type Locale } from "./http";
 import { runMcp } from "./mcp/server";
 import {
+  renderCourse,
   renderDetail,
   renderLocate,
   renderMenu,
   renderNearby,
   renderPhoto,
+  renderRanking,
   renderRating,
   renderReview,
   renderReviewRead,
   renderSearch,
+  renderSeating,
   renderSuggest,
   renderVacancy,
 } from "./render";
@@ -51,6 +57,9 @@ Usage:
                                             photo URLs with captions
   tabelog vacancy <url|id> [--date <YYYY-MM-DD>] [--time <HH:MM>] [--people <n>]
                                             online-booking calendar and time slots (read-only)
+  tabelog course <url|id>                   set menus with prices and conditions
+  tabelog seating <url|id>                  seat list (counter, tatami, private room) with captions
+  tabelog ranking <area>                    Tabelog's own popularity ranking for a place, top 20
   tabelog nearby <url|id> [--genre <name>] [--pages <1-5>]
                                             Tabelog's 25 nearest restaurants around one restaurant
   tabelog locate <lat,lng>                  which Tabelog areas coordinates fall in (via nearby stations)
@@ -260,6 +269,21 @@ const main = async (): Promise<void> => {
     case "review-read": {
       const result = await reviewRead(targetOf(restList, "tabelog review-read <review-url>"), locale);
       emit(json, result, renderReviewRead(result));
+      break;
+    }
+    case "course": {
+      const result = await course(targetOf(restList, "tabelog course <url|id>"), locale);
+      emit(json, result, renderCourse(result));
+      break;
+    }
+    case "seating": {
+      const result = await seating(targetOf(restList, "tabelog seating <url|id>"), locale);
+      emit(json, result, renderSeating(result));
+      break;
+    }
+    case "ranking": {
+      const result = await ranking(targetOf(restList, "tabelog ranking <area>"), locale);
+      emit(json, result, renderRanking(result));
       break;
     }
     case "nearby": {

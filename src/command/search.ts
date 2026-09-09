@@ -1,12 +1,14 @@
 import { distanceM, type GeoPoint, mapLimit } from "../geo";
-import { type HourGroup, type OpenStatus, openStatusAt } from "../hour";
-import { attrOf, classText, pick, pickAll, splitBy, toNumber } from "../html";
+import { openStatusAt } from "../hour";
 import { fetchHtml, type Locale, localeUrl } from "../http";
 import { parseJapanTime, toSvd, toSvt, type WallClock } from "../time";
 import { resolveRestaurant } from "../url";
+import { parseCardList, parseCount, type SearchItem, stationDistanceOf } from "./card";
 import { type Detail, detailOf } from "./detail";
 import { locate } from "./locate";
 import { type AreaSuggest, suggestArea, suggestGenre } from "./suggest";
+
+export type { SearchItem } from "./card";
 
 export const SORT_LIST = ["rating", "access", "reserved"] as const;
 export type Sort = (typeof SORT_LIST)[number];
@@ -118,30 +120,6 @@ export interface SearchOption {
   locale: Locale;
 }
 
-export interface SearchItem {
-  rank: number | undefined;
-  id: string;
-  name: string;
-  url: string;
-  /** "Sannomiya Sta. 450m / Ramen, Dumpling, Chinese" */
-  areaGenre: string | undefined;
-  rating: number | undefined;
-  reviewCount: number | undefined;
-  dinnerPrice: string | undefined;
-  lunchPrice: string | undefined;
-  holiday: string | undefined;
-  awardList: string[];
-  catchphrase: string | undefined;
-  featureList: string[];
-  /** Filled when `near` was given. */
-  distanceM: number | undefined;
-  /** Filled when `openAt` was given. */
-  openStatus: OpenStatus | undefined;
-  hourList: HourGroup[] | undefined;
-  privateRoom: string | undefined;
-  parking: string | undefined;
-}
-
 export interface SearchResult {
   url: string;
   resolvedArea: string | undefined;
@@ -157,55 +135,8 @@ export interface SearchResult {
   itemList: SearchItem[];
 }
 
-const CARD_MARKER = '<div class="list-rst js-bookmark js-rst-cassette-wrap"';
 const MAX_PAGE_COUNT = 5;
 const DETAIL_CONCURRENCY = 6;
-
-const priceOf = (card: string, time: "dinner" | "lunch"): string | undefined => {
-  return pick(card, new RegExp(`c-rating-v3__time--${time}"[^>]*></i><span class="c-rating-v3__val">([^<]*)<`));
-};
-
-const parseCard = (card: string): SearchItem | undefined => {
-  const id = attrOf(card, "data-rst-id");
-  const url = attrOf(card, "data-detail-url");
-  const name = pick(card, /list-rst__rst-name-target[^>]*>([\s\S]*?)<\/a>/);
-  if (!id || !url || !name) return undefined;
-
-  const ratingText = classText(card, "list-rst__rating-val");
-  return {
-    rank: toNumber(classText(card, "c-ranking-badge__contents")),
-    id,
-    name,
-    url,
-    areaGenre: classText(card, "list-rst__area-genre"),
-    rating: ratingText === "-" ? undefined : toNumber(ratingText),
-    reviewCount: toNumber(classText(card, "list-rst__rvw-count-num")),
-    dinnerPrice: priceOf(card, "dinner"),
-    lunchPrice: priceOf(card, "lunch"),
-    holiday: classText(card, "list-rst__holiday-text"),
-    awardList: pickAll(card, /class="c-badge-(?:award|hyakumeiten)[^"]*"><i>([^<]*)<\/i>/g),
-    catchphrase: classText(card, "list-rst__pr-title"),
-    featureList: pickAll(card, /list-rst__search-word-item">([\s\S]*?)<\/li>/g),
-    distanceM: undefined,
-    openStatus: undefined,
-    hourList: undefined,
-    privateRoom: undefined,
-    parking: undefined,
-  };
-};
-
-/**
- * "1 - 20 / 146" normally; an empty result renders "0 results / 0 results" with
- * only two numbers and a rstlist-notfound block instead of cards.
- */
-const parseCount = (html: string): Pick<SearchResult, "from" | "to" | "total"> => {
-  const numberList = pickAll(html, /c-page-count__num[^>]*>\s*<strong>([^<]*)</g).map((text) => toNumber(text));
-  if (numberList.length === 2 && html.includes('class="rstlist-notfound"')) {
-    return { from: 0, to: 0, total: 0 };
-  }
-  const [from, to, total] = numberList;
-  return { from, to, total };
-};
 
 const applyArea = (query: URLSearchParams, area: AreaSuggest): void => {
   query.set("pal", area.pal);
@@ -236,13 +167,6 @@ const applyVacancy = (query: URLSearchParams, vacancy: VacancyFilter): string =>
   query.set("svps", String(people));
   query.set("vac_net", "1");
   return `vacancy: online-bookable on ${svd.slice(0, 4)}-${svd.slice(4, 6)}-${svd.slice(6, 8)} at ${svt.slice(0, 2)}:${svt.slice(2)} for ${people}`;
-};
-
-/** "Sannomiya Sta. 450m / Ramen" into the station label and metres, when the card has them. */
-const stationDistanceOf = (item: SearchItem): { station: string; metre: number } | undefined => {
-  const match = /^(.*?)\s+(\d[\d,]*)\s*m\s*\//.exec(item.areaGenre ?? "");
-  const metre = toNumber(match?.[2]);
-  return match?.[1] && metre !== undefined ? { station: match[1], metre } : undefined;
 };
 
 const normalizeStation = (name: string): string => {
@@ -317,9 +241,7 @@ const fetchCardList = async (
   const path = page > 1 ? `rstLst/${page}/` : "rstLst/";
   const url = `${localeUrl(locale, path)}?${query.toString()}`;
   const { body } = await fetchHtml(url);
-  const itemList = splitBy(body, CARD_MARKER)
-    .map(parseCard)
-    .filter((item): item is SearchItem => item !== undefined);
+  const itemList = parseCardList(body);
   const count = parseCount(body);
   // A genuinely empty result still renders the counter (0). Neither cards nor a
   // counter means the markup moved, and that must not pass as "no results".

@@ -64,9 +64,14 @@ export const splitBy = (html: string, marker: string): string[] => {
   return list.map((chunk) => marker + chunk);
 };
 
-/** Inner text of the element whose class attribute contains the given class. Handles a single level of nesting. */
+/**
+ * Inner text of the first element carrying exactly this class. The class has to
+ * be a whole token in the attribute: `\b` would not do, because a hyphen is a
+ * word boundary and `list-rst__price` would then match `list-rst__price-tax`
+ * and read the wrong value.
+ */
 export const classText = (html: string, className: string): string | undefined => {
-  const pattern = new RegExp(`class="[^"]*\\b${className}\\b[^"]*"[^>]*>([\\s\\S]*?)</`);
+  const pattern = new RegExp(`class="(?:[^"]*\\s)?${className}(?:\\s[^"]*)?"[^>]*>([\\s\\S]*?)</`);
   return pick(html, pattern);
 };
 

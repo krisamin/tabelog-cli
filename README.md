@@ -12,9 +12,10 @@ the site does not offer (radius around coordinates, open at a given time,
 minimum score or review count, feature tags, private room, parking); a
 restaurant page with structured weekly hours; reviews, including one
 reviewer's full text; the posted menu; the rating breakdown; photos; the
-online-booking calendar with time slots; Tabelog's own nearest-restaurants
-list around a place; and coordinates resolved to a Tabelog area. Reservation
-itself stays in the browser.
+online-booking calendar with time slots; set menus and the seat list; a
+place's popularity ranking; Tabelog's own nearest-restaurants list around a
+restaurant; and coordinates resolved to a Tabelog area. Reservation itself
+stays in the browser.
 
 ## Install
 
@@ -74,6 +75,13 @@ tabelog photo 27000401 --mode owner
 # online-booking calendar and time slots for a date and party size
 tabelog vacancy 27000401 --date 2026-09-11 --people 1 --time 19:00
 
+# set menus with prices and conditions, and the seat list
+tabelog course 27000401
+tabelog seating 1079755
+
+# Tabelog's own popularity ranking for a place (not the score order)
+tabelog ranking Susukino
+
 # Tabelog's own 25 nearest restaurants around one place, with distances
 tabelog nearby 1077287
 tabelog nearby 1077287 --genre ramen --pages 2
@@ -115,8 +123,8 @@ tabelog mcp
 ```
 
 Serves the same commands as MCP tools over stdio: `search`, `detail`,
-`review`, `review_read`, `menu`, `rating`, `photo`, `vacancy`, `nearby`,
-`locate`, `suggest`. The server is a hand-written JSON-RPC loop rather than the
+`review`, `review_read`, `menu`, `rating`, `photo`, `vacancy`, `course`,
+`seating`, `ranking`, `nearby`, `locate`, `suggest`. The server is a hand-written JSON-RPC loop rather than the
 official SDK, which pulls in a hundred packages for HTTP transports this never
 uses. Register it with your host as command `tabelog`, arguments `["mcp"]`.
 
@@ -132,6 +140,9 @@ uses. Register it with your host as command `tabelog`, arguments `["mcp"]`.
 | Rating | `/{path}/dtlratings/`: `ratings-contents__table` averages, `ratings-contents__item` histograms for score and spending. |
 | Photos | `/{path}/dtlphotolst/?PG=&mode=`. `rstdtl-photo-list__item` blocks. |
 | Vacancy | `/en/booking/calendar/find_vacancy_date_with_status/`, `find_vacancy/`, `find_vacancy_member_by_date/` JSON, the endpoints behind the reservation modal. Day codes: 0 none, 1 limited, 2 available, 3 closed. |
+| Courses | `/{path}/party/`: `rstdtl-course-list__*` blocks. The plan id on the reserve button is the one the booking form takes. |
+| Seating | `/{path}/table/`: `rstdtl-table-lst__*` blocks, grouped by seat kind. |
+| Ranking | `/{locale}/{pal}/{LstPrf}/{LstAre}/rank/`, top 20, same card markup as search. Prefecture, city and area only; no station, no genre, one page. |
 | Nearby | `/{path}/peripheral_map/{page}/{genre}/`, Tabelog's own nearest list: five per page, up to five pages, with the pins' coordinates in `data-gmaps-lat` / `data-gmaps-lng`. |
 | Coordinates to area | Railway stations from OpenStreetMap (Overpass), each verified against `web-api/v1/search-suggestions/area` on the Japanese site (which returns station coordinates and shares station ids with the inbound index) and then resolved to a filter. No station near falls back to Nominatim's ward/city. |
 | Distance / open now / facilities | Computed here from each result's JSON-LD coordinates, parsed hours and info-table rows; Tabelog's inbound site has none of these filters. |
@@ -147,6 +158,24 @@ against, it bounds the distance and the card is skipped without a fetch.
 If Tabelog changes its markup the parsers here will need to follow. Every
 selector is a BEM class name the site has kept stable for years, and each
 command fails loudly rather than returning an empty page as success.
+
+Restaurant pages are cached in memory for the life of the process, so a search
+that filters on distance, opening hours and facilities at once still fetches
+each restaurant once. Nothing is written to disk.
+
+## Tests
+
+```bash
+bun test          # parsers against captured pages, plus the time and geo logic
+bun run check     # typecheck, lint and test
+```
+
+The fixtures under `test/fixture/` are real Tabelog pages, gzipped. The tests
+assert values a user would notice going missing (this restaurant's score, that
+price, the address, a menu item) rather than that an array is non-empty, so a
+regex that still matches but grabs the neighbouring element fails. That is not
+hypothetical: `classText` used a `\b` boundary, which made `list-rst__price`
+match `list-rst__price-tax`, and the test for it is what found the bug.
 
 ## License
 

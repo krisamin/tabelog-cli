@@ -97,10 +97,35 @@ const parseInfoTable = (html: string): InfoRow[] => {
   return rowList;
 };
 
+/**
+ * One search can want the same restaurant page for distance, hours and
+ * facilities, and an MCP session usually asks about the same handful of places
+ * in a row. Pages are cached for the life of the process, keyed by locale, so
+ * a filter combination costs one fetch per restaurant instead of one per
+ * filter. Nothing here is written to disk: a stale price is worse than a
+ * second request next time.
+ */
+const detailCache = new Map<string, Promise<Detail>>();
+
 export const detailOf = async (ref: RestaurantRef, locale: Locale): Promise<Detail> => {
+  const key = `${locale}:${ref.id}`;
+  const cached = detailCache.get(key);
+  if (cached) return cached;
+  const pending = fetchDetail(ref, locale);
+  detailCache.set(key, pending);
+  // A failed fetch must not be remembered as the answer.
+  pending.catch(() => detailCache.delete(key));
+  return pending;
+};
+
+const fetchDetail = async (ref: RestaurantRef, locale: Locale): Promise<Detail> => {
   const url = detailUrl(ref, locale);
   const { body } = await fetchHtml(url);
+  return parseDetail(body, { id: ref.id, url, locale });
+};
 
+export const parseDetail = (body: string, at: { id: string; url: string; locale: Locale }): Detail => {
+  const { id, url, locale } = at;
   const ld = jsonLdList(body).find((block) => block["@type"] === "Restaurant") as LdRestaurant | undefined;
   const infoList = parseInfoTable(body);
   if (!ld && !infoList.length) {
@@ -110,7 +135,7 @@ export const detailOf = async (ref: RestaurantRef, locale: Locale): Promise<Deta
   const reviewCount = ld?.aggregateRating?.ratingCount;
 
   return {
-    id: ref.id,
+    id,
     url,
     name: asString(ld?.name) ?? classText(body, "rdheader-rstname") ?? undefined,
     rating: toNumber(rating === undefined ? classText(body, "rdheader-rating__score-val-dtl") : String(rating)),

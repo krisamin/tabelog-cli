@@ -85,7 +85,11 @@ export const review = async (input: string, option: ReviewOption): Promise<Revie
     sortByVisit: option.byVisit === true,
   });
   const { body } = await fetchHtml(url);
-  return { url, page, itemList: splitBy(body, CARD_MARKER).map(parseCard) };
+  return parseReviewList(body, { url, page });
+};
+
+export const parseReviewList = (body: string, at: { url: string; page: number }): ReviewResult => {
+  return { ...at, itemList: splitBy(body, CARD_MARKER).map(parseCard) };
 };
 
 /**
@@ -118,7 +122,10 @@ export const reviewRead = async (input: string, locale: Locale): Promise<ReviewR
   if (!match) throw new Error(`Not a Tabelog review URL (expected .../dtlrvwlst/B123456/): ${input}`);
   const url = `https://tabelog.com/${locale}/${match[1]}/dtlrvwlst/${match[2]}/`;
   const { body } = await fetchHtml(url);
+  return parseReviewRead(body, url);
+};
 
+export const parseReviewRead = (body: string, url: string): ReviewReadResult => {
   const reviewerAnchor = reviewerAnchorOf(body);
   const visitList = splitBy(body, VISIT_MARKER).map((chunk): ReviewVisit => {
     const ratingBlock = /rvw-item__single-ratings-total[\s\S]*?<\/p>/.exec(chunk)?.[0] ?? "";

@@ -1,8 +1,10 @@
+import { course } from "../command/course";
 import { detail } from "../command/detail";
 import { locate } from "../command/locate";
 import { menu } from "../command/menu";
 import { nearby } from "../command/nearby";
 import { photo } from "../command/photo";
+import { ranking } from "../command/ranking";
 import { rating } from "../command/rating";
 import { isUseType, review, reviewRead, USE_TYPE_LIST } from "../command/review";
 import {
@@ -17,20 +19,24 @@ import {
   search,
   type VacancyFilter,
 } from "../command/search";
+import { seating } from "../command/seating";
 import { suggest } from "../command/suggest";
 import { vacancy } from "../command/vacancy";
 import { parseGeoPoint } from "../geo";
 import { DEFAULT_LOCALE, isLocale, LOCALE_LIST } from "../http";
 import {
+  renderCourse,
   renderDetail,
   renderLocate,
   renderMenu,
   renderNearby,
   renderPhoto,
+  renderRanking,
   renderRating,
   renderReview,
   renderReviewRead,
   renderSearch,
+  renderSeating,
   renderSuggest,
   renderVacancy,
 } from "../render";
@@ -395,6 +401,42 @@ export const TOOL_LIST: ToolDefinition[] = [
           people: optionalNumber(input, "people"),
         }),
       ),
+  },
+  {
+    name: "course",
+    description:
+      "Set menus (courses) a restaurant sells: title, price per person and whether tax is included, what it includes, conditions such as time limit or minimum party, any 'most popular' badge, and the plan id the reservation flow uses. Restaurants that registered none are reported as such.",
+    inputSchema: {
+      type: "object",
+      properties: { ...RESTAURANT_PROPERTY, ...LOCALE_PROPERTY },
+      required: ["restaurant"],
+    },
+    run: async (input) => renderCourse(await course(requiredString(input, "restaurant"), localeOf(input))),
+  },
+  {
+    name: "seating",
+    description:
+      "The seat list of a restaurant: each kind of seating (counter, table, tatami, private room, terrace) with the restaurant's own caption, such as how many guests a private room takes, and a photo. Use this when the info table's bare 'private room: available' is not enough.",
+    inputSchema: {
+      type: "object",
+      properties: { ...RESTAURANT_PROPERTY, ...LOCALE_PROPERTY },
+      required: ["restaurant"],
+    },
+    run: async (input) => renderSeating(await seating(requiredString(input, "restaurant"), localeOf(input))),
+  },
+  {
+    name: "ranking",
+    description:
+      "Tabelog's own popularity ranking for a place, top 20. This is not the score order search returns: it reflects what people view and book. Exists for a prefecture, city or area; a station falls back to the area around it. No genre filter and one page only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        area: { type: "string", description: "Prefecture, city, area or station, English or Japanese." },
+        ...LOCALE_PROPERTY,
+      },
+      required: ["area"],
+    },
+    run: async (input) => renderRanking(await ranking(requiredString(input, "area"), localeOf(input))),
   },
   {
     name: "nearby",

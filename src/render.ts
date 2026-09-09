@@ -1,11 +1,14 @@
+import type { CourseResult } from "./command/course";
 import type { Detail } from "./command/detail";
 import type { LocateResult } from "./command/locate";
 import { type MenuResult, menuItemCount } from "./command/menu";
 import type { NearbyResult } from "./command/nearby";
 import type { PhotoResult } from "./command/photo";
+import type { RankingResult } from "./command/ranking";
 import type { RatingResult } from "./command/rating";
 import type { ReviewReadResult, ReviewResult } from "./command/review";
 import type { SearchResult } from "./command/search";
+import type { SeatingResult } from "./command/seating";
 import type { Suggest } from "./command/suggest";
 import type { VacancyResult } from "./command/vacancy";
 import { formatDistance } from "./geo";
@@ -61,7 +64,7 @@ export const renderSearch = (result: SearchResult): string => {
 
 export const renderNearby = (result: NearbyResult): string => {
   const headList = defined([
-    `${result.itemList.length} restaurants around ${result.anchorId} (Tabelog's nearest list, ${result.pageCount} pages)`,
+    `${result.itemList.length} restaurants around ${result.anchorId} (Tabelog's nearest list, ${result.pageCount} page${result.pageCount === 1 ? "" : "s"})`,
     result.resolvedGenre ? `genre: ${result.resolvedGenre}` : undefined,
     result.url,
     "",
@@ -250,4 +253,56 @@ export const renderReviewRead = (result: ReviewReadResult): string => {
     ]).join("\n"),
   );
   return [...headList, ...bodyList].join("\n\n");
+};
+
+export const renderCourse = (result: CourseResult): string => {
+  const head = [`${result.itemList.length} set menus`, result.url].join("\n");
+  if (!result.itemList.length) return `${head}\n\nNo set menus posted on Tabelog.`;
+  const bodyList = result.itemList.map((item) =>
+    defined([
+      `${item.price ? `JPY ${item.price}` : "price -"}${item.priceNote ? ` ${item.priceNote}` : ""}${
+        item.labelList.length ? `  [${item.labelList.join(", ")}]` : ""
+      }`,
+      `## ${item.title}`,
+      item.ruleList.length ? item.ruleList.map((rule) => `   ${rule}`).join("\n") : undefined,
+      item.description,
+      item.planId ? `   plan ${item.planId}` : undefined,
+      item.url ? `   ${item.url}` : undefined,
+    ]).join("\n"),
+  );
+  return [head, ...bodyList].join("\n\n");
+};
+
+export const renderSeating = (result: SeatingResult): string => {
+  const head = [`${result.sectionList.length} seating types`, result.url].join("\n");
+  if (!result.sectionList.length) return `${head}\n\nNo seating information registered on Tabelog.`;
+  const bodyList = result.sectionList.map((section) =>
+    [
+      `## ${show(section.title, "seats")}`,
+      ...section.itemList.map((item) =>
+        defined([`- ${show(item.caption, "")}`.trimEnd(), item.imageUrl ? `    ${item.imageUrl}` : undefined]).join(
+          "\n",
+        ),
+      ),
+    ].join("\n"),
+  );
+  return [head, ...bodyList].join("\n\n");
+};
+
+export const renderRanking = (result: RankingResult): string => {
+  const headList = defined([
+    `Tabelog popularity ranking for ${result.resolvedArea}, top ${result.itemList.length}`,
+    result.note,
+    result.url,
+    "",
+  ]);
+  const bodyList = result.itemList.map((item) =>
+    defined([
+      `${show(item.rank, "").padStart(2)} ${item.name}  ${show(item.rating)} (${show(item.reviewCount, "0")} reviews)  id=${item.id}`,
+      `   ${show(item.areaGenre, "")}`,
+      item.awardList.length ? `   award: ${item.awardList.join("; ")}` : undefined,
+      `   ${item.url}`,
+    ]).join("\n"),
+  );
+  return [...headList, ...bodyList].join("\n");
 };

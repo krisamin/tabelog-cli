@@ -54,6 +54,11 @@ export const rating = async (input: string, locale: Locale): Promise<RatingResul
   const ref = await resolveRestaurant(input);
   const url = ratingUrl(ref, locale);
   const { body } = await fetchHtml(url);
+  return parseRating(body, { id: ref.id, url });
+};
+
+export const parseRating = (body: string, at: { id: string; url: string }): RatingResult => {
+  const { id, url } = at;
 
   const spendStart = body.indexOf('id="price-range"');
   const scoreRegion = spendStart < 0 ? body : body.slice(0, spendStart);
@@ -77,5 +82,5 @@ export const rating = async (input: string, locale: Locale): Promise<RatingResul
     }))
     .filter((group) => group.bandList.length > 0);
 
-  return { id: ref.id, url, averageList, distributionList, spendList };
+  return { id, url, averageList, distributionList, spendList };
 };

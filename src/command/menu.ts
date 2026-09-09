@@ -55,7 +55,10 @@ export const menu = async (input: string, kind: MenuKind, locale: Locale): Promi
   const ref = await resolveRestaurant(input);
   const url = menuUrl(ref, locale, kind);
   const { body } = await fetchHtml(url);
+  return parseMenu(body, { id: ref.id, kind, url });
+};
 
+export const parseMenu = (body: string, at: { id: string; kind: MenuKind; url: string }): MenuResult => {
   const menuStart = body.indexOf("rstdtl-menu-heading");
   const region = menuStart < 0 ? "" : body.slice(menuStart);
   const sectionList = splitBy(region, SECTION_MARKER)
@@ -63,9 +66,7 @@ export const menu = async (input: string, kind: MenuKind, locale: Locale): Promi
     .filter((section) => section.itemList.length > 0);
 
   return {
-    id: ref.id,
-    kind,
-    url,
+    ...at,
     lastUpdated:
       pick(body, /Last updated\s*:\s*([^<]*)</i) ??
       pick(body, /rstdtl-menu-update[^>]*>\s*<span>([^<]*)</) ??
