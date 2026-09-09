@@ -86,6 +86,16 @@ const statusOf = (code: number | undefined): VacancyDay["status"] => {
   }
 };
 
+/** A restaurant without online booking answers 400 on these endpoints; that is "not bookable", not a failure. */
+const bookingJson = async <T>(url: string): Promise<T> => {
+  try {
+    return await fetchJson<T>(url);
+  } catch (error) {
+    if (error instanceof Error && /^HTTP 4\d\d /.test(error.message)) return {} as T;
+    throw error;
+  }
+};
+
 const pad = (value: number | undefined): string => String(value ?? 0).padStart(2, "0");
 
 const toVacancyDay = (raw: RawDay): VacancyDay => ({
@@ -104,9 +114,9 @@ export const vacancy = async (input: string, option: VacancyOption): Promise<Vac
   const base = { rst_id: ref.id, svd, svps: String(people) };
 
   const [dateWithStatus, memberByDate, found] = await Promise.all([
-    fetchJson<RawDateWithStatus>(bookingUrl("find_vacancy_date_with_status", base)),
-    fetchJson<RawMemberByDate>(bookingUrl("find_vacancy_member_by_date", { rst_id: ref.id, svd })),
-    fetchJson<RawVacancy>(bookingUrl("find_vacancy", { ...base, svt })),
+    bookingJson<RawDateWithStatus>(bookingUrl("find_vacancy_date_with_status", base)),
+    bookingJson<RawMemberByDate>(bookingUrl("find_vacancy_member_by_date", { rst_id: ref.id, svd })),
+    bookingJson<RawVacancy>(bookingUrl("find_vacancy", { ...base, svt })),
   ]);
 
   const dayList = (dateWithStatus.list ?? []).map(toVacancyDay);

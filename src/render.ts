@@ -147,26 +147,54 @@ export const renderPhoto = (result: PhotoResult): string => {
   ].join("\n");
 };
 
+const CALENDAR_DAY_COUNT = 28;
+
 export const renderVacancy = (result: VacancyResult): string => {
   if (!result.bookable) {
     return `Restaurant ${result.id} has no online booking on Tabelog. Check the detail page's reservation row and phone.`;
   }
   const lineList = [`${result.date} ${result.time} for ${result.people}`, ""];
-  lineList.push(
-    result.slotList.length
-      ? `bookable times on ${result.date} for ${result.people}:`
-      : `no online table on ${result.date} for ${result.people} around ${result.time}`,
-    ...result.slotList.map((slot) => `  ${slot.time}  ${slot.bookingUrl}`),
-    "",
-  );
-  if (result.partySizeList.length) {
-    lineList.push(`party sizes taken online that day: ${result.partySizeList.join(", ")}`, "");
-  }
-  if (result.dayList.length) {
+
+  if (result.slotList.length) {
+    // One URL per slot differs only in visit_time; print the times once and
+    // the URL for the asked time (or the nearest slot) so the answer stays short.
+    const asked = result.slotList.find((slot) => slot.time === result.time);
+    const nearest =
+      asked ??
+      [...result.slotList].sort(
+        (a, b) =>
+          Math.abs(minuteOf(a.time) - minuteOf(result.time)) - Math.abs(minuteOf(b.time) - minuteOf(result.time)),
+      )[0];
     lineList.push(
-      "calendar:",
-      ...result.dayList.map((day) => `  ${day.date} ${day.day}  ${day.status}${day.holiday ? " (holiday)" : ""}`),
+      `bookable times on ${result.date} for ${result.people}: ${result.slotList.map((slot) => slot.time).join(", ")}`,
+      nearest ? `book ${nearest.time}: ${nearest.bookingUrl}` : "",
+      "",
     );
+  } else {
+    lineList.push(`no online table on ${result.date} for ${result.people} around ${result.time}`, "");
+  }
+
+  if (result.partySizeList.length) {
+    const min = Math.min(...result.partySizeList);
+    const max = Math.max(...result.partySizeList);
+    lineList.push(`party sizes taken online that day: ${min}-${max}`, "");
+  }
+
+  const windowList = result.dayList.slice(0, CALENDAR_DAY_COUNT);
+  if (windowList.length) {
+    const okCount = windowList.filter((day) => day.status === "available" || day.status === "limited").length;
+    const otherList = windowList.filter((day) => day.status !== "available");
+    lineList.push(`next ${windowList.length} days: tables on ${okCount}`);
+    if (otherList.length) {
+      lineList.push(
+        ...otherList.map((day) => `  ${day.date} ${day.day}  ${day.status}${day.holiday ? " (holiday)" : ""}`),
+      );
+    }
   }
   return lineList.join("\n").trimEnd();
+};
+
+const minuteOf = (time: string): number => {
+  const [hh, mm] = time.split(":").map(Number);
+  return (hh ?? 0) * 60 + (mm ?? 0);
 };
