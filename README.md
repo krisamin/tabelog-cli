@@ -7,11 +7,14 @@ plain server-rendered HTML with schema.org JSON-LD. This reads those. No
 browser, no headless Chrome, no runtime dependencies.
 
 What it reads: restaurant search with Tabelog's own filters (area, genre,
-keyword, budget band, online-bookable at a date/time/party size) plus two
-filters the site does not offer (distance from coordinates, open at a given
-time); a restaurant page with structured weekly hours; reviews; the posted
-menu; the rating breakdown; photos; and the online-booking calendar with time
-slots. Reservation itself stays in the browser.
+keyword, budget band, online-bookable at a date/time/party size) plus filters
+the site does not offer (radius around coordinates, open at a given time,
+minimum score or review count, feature tags, private room, parking); a
+restaurant page with structured weekly hours; reviews, including one
+reviewer's full text; the posted menu; the rating breakdown; photos; the
+online-booking calendar with time slots; Tabelog's own nearest-restaurants
+list around a place; and coordinates resolved to a Tabelog area. Reservation
+itself stays in the browser.
 
 ## Install
 
@@ -42,17 +45,25 @@ tabelog search --area Ginza --genre sushi --budget-meal lunch --budget-min 5000 
 # only places with an online-bookable table then
 tabelog search --area Sapporo --genre sushi --vacancy-date 2026-09-11 --vacancy-time 19:00 --vacancy-people 1
 
-# nearest first from coordinates, within 400 m, and open at that time in Japan.
-# both read every result's page (about 2 s for a page of 20)
-tabelog search --area Sannomiya --genre ramen --near 34.6946,135.1955 --radius-m 400 --open-at "2026-09-11 14:30"
-tabelog search --area Susukino --open-at now
+# radius around a point. --near alone picks the area itself: the nearest railway
+# station Tabelog knows. --pages widens the net, since the list is score-ordered
+tabelog search --near 43.0553,141.3532 --radius-m 300 --genre sushi
+tabelog search --near 34.6687,135.5013 --radius-m 200 --pages 3 --open-at now
+
+# open at a Japan wall-clock time, and the cheap card-level filters
+tabelog search --area Susukino --open-at "2026-09-12 19:00" --min-rating 3.5 --min-review-count 100
+tabelog search --area Susukino --genre ジンギスカン --feature "non smoking,credit card" --order review_count
+
+# facilities from each restaurant's own page
+tabelog search --area Sapporo --genre sushi --private-room --parking
 
 # a restaurant page, by URL or by the id shown in search results
 tabelog detail https://tabelog.com/hyogo/A2801/A280101/28043837/
 tabelog detail 28043837
 
-# reviews, newest visit first, lunch only
+# reviews, newest visit first, lunch only; then one reviewer's full text
 tabelog review 28043837 --by-visit --use-type lunch
+tabelog review-read https://tabelog.com/en/hyogo/A2801/A280101/28043837/dtlrvwlst/B486164563/
 
 # posted menu (food by default; lunch, drink), rating breakdown, photos
 tabelog menu 28002413
@@ -62,6 +73,13 @@ tabelog photo 27000401 --mode owner
 
 # online-booking calendar and time slots for a date and party size
 tabelog vacancy 27000401 --date 2026-09-11 --people 1 --time 19:00
+
+# Tabelog's own 25 nearest restaurants around one place, with distances
+tabelog nearby 1077287
+tabelog nearby 1077287 --genre ramen --pages 2
+
+# which Tabelog areas a GPS point falls in
+tabelog locate 43.0553,141.3532
 
 # what does a word resolve to?
 tabelog suggest Sannomiya
@@ -80,12 +98,15 @@ Japanese one and switch `--locale kr` for Korean output. Genres are pickier
 than areas: the index has Tabelog's own labels, so `串カツ` resolves where
 `kushikatsu` does not. A genre that fails to resolve is searched as a keyword
 instead, and the result header says so. Landmarks (Dotonbori) are not areas;
-use the nearest station.
+use the nearest station or pass `--near` with its coordinates.
 
 Times are Japan time. `--open-at` reads the English page's weekly hours; a
 restaurant with no parsable hours is kept and marked unknown, never dropped.
-`--near` is straight-line distance and applies to the fetched page only, so
-pair it with an area that already narrows the candidates.
+`--near`, `--open-at`, `--private-room` and `--parking` each read every
+result's page, roughly two seconds per page of twenty. Distances are
+straight-line, and the radius applies only to the pages actually read: Tabelog
+orders the list by score, not by distance, so a tight radius keeps few per page
+and the header says when raising `--pages` is worth it.
 
 ## MCP
 
@@ -94,10 +115,10 @@ tabelog mcp
 ```
 
 Serves the same commands as MCP tools over stdio: `search`, `detail`,
-`review`, `menu`, `rating`, `photo`, `vacancy`, `suggest`. The server is a
-hand-written JSON-RPC loop rather than the official SDK, which pulls in a
-hundred packages for HTTP transports this never uses. Register it with your
-host as command `tabelog`, arguments `["mcp"]`.
+`review`, `review_read`, `menu`, `rating`, `photo`, `vacancy`, `nearby`,
+`locate`, `suggest`. The server is a hand-written JSON-RPC loop rather than the
+official SDK, which pulls in a hundred packages for HTTP transports this never
+uses. Register it with your host as command `tabelog`, arguments `["mcp"]`.
 
 ## How it reads the site
 
@@ -106,13 +127,22 @@ host as command `tabelog`, arguments `["mcp"]`.
 | Search | `/{locale}/rstLst/` with the hidden-form parameters the search box submits (`pal`, `LstPrf`, `LstAre`, `station_id`, `area_datatype`, `area_id`, `genre_name`, `sw`, `SrtT`), budget (`RdoCosTp`, `LstCos`, `LstCosT`; bands verified against returned prices) and vacancy (`svd`, `svt`, `svps`, `vac_net=1`). Cards are `list-rst__*` blocks. |
 | Area / genre resolution | `/en/suggest/keyword_suggest?keyword=` (XHR-only endpoint, needs `X-Requested-With`). |
 | Detail | schema.org `Restaurant` JSON-LD plus the `rstinfo-table` label/value rows, returned in page order. Hours come from `rstinfo-table__business-item` groups (English page). |
-| Reviews | `/{path}/dtlrvwlst/?PG=` with `use_type` and `srt=visit`. Cards are `rvw-item__*` blocks. Only the excerpt the list page shows is read. |
+| Reviews | `/{path}/dtlrvwlst/?PG=` with `use_type` and `srt=visit`. Cards are `rvw-item__*` blocks; the list page carries only an excerpt, so full text comes from `/{path}/dtlrvwlst/B{bookmark}/`. |
 | Menu | `/{path}/dtlmenu/`, `/lunch/`, `/drink/`. `rstdtl-menu-lst__*` blocks. |
 | Rating | `/{path}/dtlratings/`: `ratings-contents__table` averages, `ratings-contents__item` histograms for score and spending. |
 | Photos | `/{path}/dtlphotolst/?PG=&mode=`. `rstdtl-photo-list__item` blocks. |
 | Vacancy | `/en/booking/calendar/find_vacancy_date_with_status/`, `find_vacancy/`, `find_vacancy_member_by_date/` JSON, the endpoints behind the reservation modal. Day codes: 0 none, 1 limited, 2 available, 3 closed. |
-| Distance / open now | Computed here from each result's JSON-LD coordinates and parsed hours; Tabelog's inbound site has neither filter. |
+| Nearby | `/{path}/peripheral_map/{page}/{genre}/`, Tabelog's own nearest list: five per page, up to five pages, with the pins' coordinates in `data-gmaps-lat` / `data-gmaps-lng`. |
+| Coordinates to area | Railway stations from OpenStreetMap (Overpass), each verified against `web-api/v1/search-suggestions/area` on the Japanese site (which returns station coordinates and shares station ids with the inbound index) and then resolved to a filter. No station near falls back to Nominatim's ward/city. |
+| Distance / open now / facilities | Computed here from each result's JSON-LD coordinates, parsed hours and info-table rows; Tabelog's inbound site has none of these filters. |
 | Id to URL | `/en/rstdtl/{id}/` redirects to the canonical path; only the path is taken from it. |
+
+Coordinate search is the one thing Tabelog itself cannot do: `lat`/`lon`
+parameters are ignored by the list page, and the JP-only radius search sits
+behind the Cloudflare challenge. So an area still bounds every search, and the
+radius is applied afterwards from real coordinates. When a card's own
+"Station 450m" is measured from the same station the point was measured
+against, it bounds the distance and the card is skipped without a fetch.
 
 If Tabelog changes its markup the parsers here will need to follow. Every
 selector is a BEM class name the site has kept stable for years, and each

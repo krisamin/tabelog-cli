@@ -1,14 +1,18 @@
 import { detail } from "../command/detail";
+import { locate } from "../command/locate";
 import { menu } from "../command/menu";
+import { nearby } from "../command/nearby";
 import { photo } from "../command/photo";
 import { rating } from "../command/rating";
-import { isUseType, review, USE_TYPE_LIST } from "../command/review";
+import { isUseType, review, reviewRead, USE_TYPE_LIST } from "../command/review";
 import {
   type BudgetOption,
   isMeal,
+  isOrder,
   isSort,
   MEAL_LIST,
   type NearOption,
+  ORDER_LIST,
   SORT_LIST,
   search,
   type VacancyFilter,
@@ -19,10 +23,13 @@ import { parseGeoPoint } from "../geo";
 import { DEFAULT_LOCALE, isLocale, LOCALE_LIST } from "../http";
 import {
   renderDetail,
+  renderLocate,
   renderMenu,
+  renderNearby,
   renderPhoto,
   renderRating,
   renderReview,
+  renderReviewRead,
   renderSearch,
   renderSuggest,
   renderVacancy,
@@ -58,6 +65,18 @@ const optionalNumber = (input: Record<string, unknown>, key: string): number | u
 };
 
 const flag = (input: Record<string, unknown>, key: string): boolean => input[key] === true;
+
+/** Accepts a JSON array or a comma-separated string. */
+const stringList = (input: Record<string, unknown>, key: string): string[] | undefined => {
+  const value = input[key];
+  const rawList = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
+  const cleaned = rawList.map((item) => item.trim()).filter(Boolean);
+  return cleaned.length ? cleaned : undefined;
+};
 
 const oneOf = <T extends string>(
   input: Record<string, unknown>,
@@ -131,14 +150,14 @@ export const TOOL_LIST: ToolDefinition[] = [
   {
     name: "search",
     description:
-      "Search Tabelog restaurants by area, genre and/or free-text keyword, sorted by Tabelog score by default; 20 per page with score, review count, dinner/lunch price band, closing day, awards and the restaurant id/URL. Optional filters: budget band per meal, online-bookable at a date/time/party size, distance from coordinates (near + radius_m, sorted nearest first), and open at a Japan time (open_at). near and open_at read each result's page, so they take a few seconds and apply to the fetched page only. Area and genre resolve through Tabelog's suggest index: use English or Japanese names (Sannomiya, 三宮, ramen, 焼鳥); Korean is not indexed.",
+      "Search Tabelog restaurants. Give an area (station, town, ward, city, prefecture) and/or genre and/or keyword, or coordinates via near. 20 per page with score, review count, dinner/lunch price band, closing day, awards, feature tags and the restaurant id/URL; pages reads several consecutive pages. Server-side filters: sort, budget band per meal, online-bookable at a date/time/party size. Client-side filters: min_rating, min_review_count, feature tags, near + radius_m (distance from coordinates; when area is omitted the nearest station Tabelog knows is derived from the coordinates), open_at (Japan time), private_room, parking. near/open_at/private_room/parking read each result's page (about 2 s per 20). Area and genre resolve through Tabelog's suggest index: English or Japanese names (Sannomiya, 三宮, ramen, 焼鳥); Korean is not indexed.",
     inputSchema: {
       type: "object",
       properties: {
         area: {
           type: "string",
           description:
-            "Station, town, ward, city or prefecture, in English or Japanese. Resolved to Tabelog's area filter. Landmarks (Dotonbori) are not areas; use the nearest station (Namba).",
+            "Station, town, ward, city or prefecture, in English or Japanese. Resolved to Tabelog's area filter. Landmarks (Dotonbori) are not areas; use the nearest station (Namba) or pass near instead.",
         },
         genre: {
           type: "string",
@@ -153,9 +172,15 @@ export const TOOL_LIST: ToolDefinition[] = [
           type: "string",
           enum: [...SORT_LIST],
           description:
-            "rating (default) = Tabelog score, access = most viewed by overseas visitors, reserved = most reserved.",
+            "Site order: rating (default) = Tabelog score, access = most viewed by overseas visitors, reserved = most reserved.",
         },
         ...PAGE_PROPERTY("Result"),
+        pages: {
+          type: "integer",
+          minimum: 1,
+          maximum: 5,
+          description: "How many consecutive pages to read from page. Defaults to 1, or 2 when near is given.",
+        },
         budget_meal: {
           type: "string",
           enum: [...MEAL_LIST],
@@ -185,13 +210,29 @@ export const TOOL_LIST: ToolDefinition[] = [
         near: {
           type: "string",
           description:
-            'Coordinates "lat,lng" to sort this page\'s results by straight-line distance. Combine with area for a sensible candidate set.',
+            'Coordinates "lat,lng". Results are measured and ordered by straight-line distance. Without area, the nearest railway station (OpenStreetMap) that Tabelog knows becomes the area.',
         },
         radius_m: { type: "integer", minimum: 1, description: "Drop results farther than this many metres from near." },
         open_at: {
           type: "string",
           description:
             '"now" or "YYYY-MM-DD HH:MM" in Japan time. Drops restaurants whose posted hours say closed then; keeps ones with no parsable hours and marks them unknown.',
+        },
+        min_rating: { type: "number", description: "Keep only Tabelog scores at or above this (e.g. 3.5)." },
+        min_review_count: { type: "integer", description: "Keep only restaurants with at least this many reviews." },
+        feature: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            'English feature tags every result must carry, matched as substrings: "non smoking", "credit card", "wi-fi", "multilingual menu", "children welcome", "vegetarian", "halal", "menu with photos".',
+        },
+        private_room: { type: "boolean", description: "Only restaurants whose page lists private rooms as available." },
+        parking: { type: "boolean", description: "Only restaurants whose page lists parking as available." },
+        order: {
+          type: "string",
+          enum: [...ORDER_LIST],
+          description:
+            "Final ordering of kept results: site (default), distance (default with near), review_count, rating.",
         },
         ...LOCALE_PROPERTY,
       },
@@ -204,10 +245,17 @@ export const TOOL_LIST: ToolDefinition[] = [
           keyword: optionalString(input, "keyword"),
           sort: oneOf(input, "sort", SORT_LIST, isSort),
           page: optionalNumber(input, "page"),
+          pages: optionalNumber(input, "pages"),
           budget: budgetOf(input),
           vacancy: vacancyOf(input),
           near: nearOf(input),
           openAt: optionalString(input, "open_at"),
+          minRating: optionalNumber(input, "min_rating"),
+          minReviewCount: optionalNumber(input, "min_review_count"),
+          featureList: stringList(input, "feature"),
+          privateRoom: flag(input, "private_room"),
+          parking: flag(input, "parking"),
+          order: oneOf(input, "order", ORDER_LIST, isOrder),
           locale: localeOf(input),
         }),
       ),
@@ -215,7 +263,7 @@ export const TOOL_LIST: ToolDefinition[] = [
   {
     name: "detail",
     description:
-      "Read one restaurant's page: score, review count, cuisine, phone, Japanese address, coordinates, structured weekly hours, transportation, price bands, payment methods, seats, smoking policy, reservation policy, website and the rest of Tabelog's info table.",
+      "Read one restaurant's page: score, review count, cuisine, phone, Japanese address, coordinates, structured weekly hours, transportation, price bands, payment methods, seats, smoking policy, private rooms, parking, reservation policy, website and the rest of Tabelog's info table.",
     inputSchema: {
       type: "object",
       properties: { ...RESTAURANT_PROPERTY, ...LOCALE_PROPERTY },
@@ -226,7 +274,7 @@ export const TOOL_LIST: ToolDefinition[] = [
   {
     name: "review",
     description:
-      "List reviews of one restaurant, 20 per page: reviewer, their score, what they spent, visit month, title and the excerpt shown on the list page, with a link to the full review.",
+      "List reviews of one restaurant, 20 per page: reviewer, their score, what they spent, visit month, title and the excerpt shown on the list page, with a link to the full review (pass it to review_read).",
     inputSchema: {
       type: "object",
       properties: {
@@ -254,6 +302,20 @@ export const TOOL_LIST: ToolDefinition[] = [
           locale: localeOf(input),
         }),
       ),
+  },
+  {
+    name: "review_read",
+    description:
+      "Full text of one reviewer's review page for a restaurant (the URL a review item links to, .../dtlrvwlst/B123456/), with every visit they logged, scores, spend and photo URLs.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Review URL from the review tool." },
+        ...LOCALE_PROPERTY,
+      },
+      required: ["url"],
+    },
+    run: async (input) => renderReviewRead(await reviewRead(requiredString(input, "url"), localeOf(input))),
   },
   {
     name: "menu",
@@ -314,7 +376,7 @@ export const TOOL_LIST: ToolDefinition[] = [
   {
     name: "vacancy",
     description:
-      "Online-reservation availability for one restaurant from Tabelog's booking calendar: which days in the coming month have tables (available / limited / none / closed), which party sizes are taken on the chosen date, and the bookable time slots around the chosen time with the booking URL for each. Read-only; the reservation itself is completed in a browser via those URLs. Restaurants without Tabelog online booking are reported as such.",
+      "Online-reservation availability for one restaurant from Tabelog's booking calendar: bookable time slots on the chosen date for the party size with the booking URL, which party sizes are taken, and which of the next 28 days have tables (available / limited / none / closed). Read-only; the reservation itself is completed in a browser via the URL. Restaurants without Tabelog online booking are reported as such.",
     inputSchema: {
       type: "object",
       properties: {
@@ -333,6 +395,42 @@ export const TOOL_LIST: ToolDefinition[] = [
           people: optionalNumber(input, "people"),
         }),
       ),
+  },
+  {
+    name: "nearby",
+    description:
+      "Tabelog's own nearest-restaurants list around one restaurant (its 'Find nearby restaurants' page): up to 25 places with score, review count, genre and straight-line distance from the anchor, optionally limited to a genre. Use when the user is at or has picked a restaurant and wants alternatives right around it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...RESTAURANT_PROPERTY,
+        genre: { type: "string", description: "Limit to a genre, English or Japanese name." },
+        pages: { type: "integer", minimum: 1, maximum: 5, description: "Pages of five to read. Defaults to 5 (all)." },
+        ...LOCALE_PROPERTY,
+      },
+      required: ["restaurant"],
+    },
+    run: async (input) =>
+      renderNearby(
+        await nearby(requiredString(input, "restaurant"), {
+          genre: optionalString(input, "genre"),
+          pages: optionalNumber(input, "pages"),
+          locale: localeOf(input),
+        }),
+      ),
+  },
+  {
+    name: "locate",
+    description:
+      "Turn coordinates into Tabelog search areas: the nearest railway stations (OpenStreetMap) resolved through Tabelog's index, falling back to the ward/city from the address. Use before search when you only have a GPS position and want to see or choose the area yourself; search's near parameter does this automatically.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        point: { type: "string", description: 'Coordinates "lat,lng".' },
+      },
+      required: ["point"],
+    },
+    run: async (input) => renderLocate(await locate(parseGeoPoint(requiredString(input, "point")))),
   },
   {
     name: "suggest",

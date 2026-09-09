@@ -4,8 +4,9 @@ import { attrOf, classText, pick, pickAll, splitBy, toNumber } from "../html";
 import { fetchHtml, type Locale, localeUrl } from "../http";
 import { parseJapanTime, toSvd, toSvt, type WallClock } from "../time";
 import { resolveRestaurant } from "../url";
-import { detailOf } from "./detail";
-import { suggestArea, suggestGenre } from "./suggest";
+import { type Detail, detailOf } from "./detail";
+import { locate } from "./locate";
+import { type AreaSuggest, suggestArea, suggestGenre } from "./suggest";
 
 export const SORT_LIST = ["rating", "access", "reserved"] as const;
 export type Sort = (typeof SORT_LIST)[number];
@@ -20,6 +21,13 @@ const SORT_CODE_MAP: Record<Sort, string> = {
 
 export const isSort = (value: unknown): value is Sort => {
   return typeof value === "string" && (SORT_LIST as readonly string[]).includes(value);
+};
+
+export const ORDER_LIST = ["site", "distance", "review_count", "rating"] as const;
+export type Order = (typeof ORDER_LIST)[number];
+
+export const isOrder = (value: unknown): value is Order => {
+  return typeof value === "string" && (ORDER_LIST as readonly string[]).includes(value);
 };
 
 export const MEAL_LIST = ["dinner", "lunch"] as const;
@@ -81,7 +89,7 @@ export interface NearOption {
 }
 
 export interface SearchOption {
-  /** Area name in English or Japanese: a station, town, ward, city or prefecture. Resolved via suggest. */
+  /** Area name in English or Japanese: a station, town, ward, city or prefecture. Resolved via suggest. Optional when near is given. */
   area?: string;
   /** Genre name in English or Japanese. Resolved via suggest. */
   genre?: string;
@@ -89,6 +97,8 @@ export interface SearchOption {
   keyword?: string;
   sort?: Sort;
   page?: number;
+  /** How many consecutive list pages to read from `page`. 1 unless filters need a wider net. Max 5. */
+  pages?: number;
   budget?: BudgetOption;
   /** Only restaurants with an online-bookable table at that date/time/party size. */
   vacancy?: VacancyFilter;
@@ -96,6 +106,15 @@ export interface SearchOption {
   near?: NearOption;
   /** Keep only restaurants open at this Japan wall-clock time ("now" or "YYYY-MM-DD HH:MM"). Costs one page fetch per result. */
   openAt?: string;
+  minRating?: number;
+  minReviewCount?: number;
+  /** Substrings every kept restaurant's English feature tags must contain ("non smoking", "credit card", "wi-fi"). */
+  featureList?: string[];
+  /** Detail-table filters; each costs one page fetch per result. */
+  privateRoom?: boolean;
+  parking?: boolean;
+  /** Final ordering of the kept results. Defaults to the site order, or distance when near is given. */
+  order?: Order;
   locale: Locale;
 }
 
@@ -119,26 +138,28 @@ export interface SearchItem {
   /** Filled when `openAt` was given. */
   openStatus: OpenStatus | undefined;
   hourList: HourGroup[] | undefined;
+  privateRoom: string | undefined;
+  parking: string | undefined;
 }
 
 export interface SearchResult {
   url: string;
   resolvedArea: string | undefined;
   resolvedGenre: string | undefined;
-  budgetNote: string | undefined;
-  vacancyNote: string | undefined;
-  nearNote: string | undefined;
-  openAtNote: string | undefined;
+  noteList: string[];
   from: number | undefined;
   to: number | undefined;
   total: number | undefined;
   page: number;
-  /** How many cards the page had before near/openAt post-filters. */
   pageCount: number;
+  /** How many cards were read before post-filters. */
+  scannedCount: number;
   itemList: SearchItem[];
 }
 
 const CARD_MARKER = '<div class="list-rst js-bookmark js-rst-cassette-wrap"';
+const MAX_PAGE_COUNT = 5;
+const DETAIL_CONCURRENCY = 6;
 
 const priceOf = (card: string, time: "dinner" | "lunch"): string | undefined => {
   return pick(card, new RegExp(`c-rating-v3__time--${time}"[^>]*></i><span class="c-rating-v3__val">([^<]*)<`));
@@ -168,6 +189,8 @@ const parseCard = (card: string): SearchItem | undefined => {
     distanceM: undefined,
     openStatus: undefined,
     hourList: undefined,
+    privateRoom: undefined,
+    parking: undefined,
   };
 };
 
@@ -184,6 +207,15 @@ const parseCount = (html: string): Pick<SearchResult, "from" | "to" | "total"> =
   return { from, to, total };
 };
 
+const applyArea = (query: URLSearchParams, area: AreaSuggest): void => {
+  query.set("pal", area.pal);
+  query.set("LstPrf", area.lstPrf);
+  query.set("LstAre", area.lstAre);
+  query.set("station_id", area.stationId);
+  query.set("area_datatype", area.datatype);
+  query.set("area_id", area.id);
+};
+
 const applyBudget = (query: URLSearchParams, budget: BudgetOption): string => {
   query.set("RdoCosTp", budget.meal === "dinner" ? "2" : "1");
   const lower = budget.min === undefined ? 0 : bandContaining(budget.min);
@@ -192,7 +224,7 @@ const applyBudget = (query: URLSearchParams, budget: BudgetOption): string => {
   if (upper) query.set("LstCosT", String(upper));
   const lowerText = budget.min === undefined ? "" : `from JPY ${budget.min.toLocaleString("en-US")}`;
   const upperText = budget.max === undefined ? "" : `up to JPY ${budget.max.toLocaleString("en-US")}`;
-  return `${budget.meal} ${[lowerText, upperText].filter(Boolean).join(" ")} (Tabelog bands ${lower || "-"}..${upper || "-"})`;
+  return `budget: ${budget.meal} ${[lowerText, upperText].filter(Boolean).join(" ")} (Tabelog bands ${lower || "-"}..${upper || "-"})`;
 };
 
 const applyVacancy = (query: URLSearchParams, vacancy: VacancyFilter): string => {
@@ -203,58 +235,141 @@ const applyVacancy = (query: URLSearchParams, vacancy: VacancyFilter): string =>
   query.set("svt", svt);
   query.set("svps", String(people));
   query.set("vac_net", "1");
-  return `online-bookable on ${svd.slice(0, 4)}-${svd.slice(4, 6)}-${svd.slice(6, 8)} at ${svt.slice(0, 2)}:${svt.slice(2)} for ${people}`;
+  return `vacancy: online-bookable on ${svd.slice(0, 4)}-${svd.slice(4, 6)}-${svd.slice(6, 8)} at ${svt.slice(0, 2)}:${svt.slice(2)} for ${people}`;
+};
+
+/** "Sannomiya Sta. 450m / Ramen" into the station label and metres, when the card has them. */
+const stationDistanceOf = (item: SearchItem): { station: string; metre: number } | undefined => {
+  const match = /^(.*?)\s+(\d[\d,]*)\s*m\s*\//.exec(item.areaGenre ?? "");
+  const metre = toNumber(match?.[2]);
+  return match?.[1] && metre !== undefined ? { station: match[1], metre } : undefined;
+};
+
+const normalizeStation = (name: string): string => {
+  return name
+    .toLowerCase()
+    .replace(/\s*(sta\.|station)\s*$/i, "")
+    .replace(/[\s\-\u30fb]/g, "");
 };
 
 /**
- * near and openAt both need the restaurant page (coordinates live in its
- * JSON-LD, hours in its info table), so one fetch per card serves both.
+ * Station labels differ between sources for the same place: OSM says "Namba",
+ * Tabelog's area is "Osaka Namba Sta." and a card may say "Kobe Sannomiya".
+ * Containment either way is close enough to trust the card's metre figure.
  */
-const enrich = async (
-  itemList: SearchItem[],
-  near: NearOption | undefined,
-  at: WallClock | undefined,
-): Promise<SearchItem[]> => {
-  return mapLimit(itemList, 6, async (item) => {
+const sameStation = (left: string, right: string): boolean => {
+  const a = normalizeStation(left);
+  const b = normalizeStation(right);
+  return a.length > 0 && b.length > 0 && (a === b || a.includes(b) || b.includes(a));
+};
+
+const infoValue = (page: Detail, labelPattern: RegExp): string | undefined => {
+  return page.infoList.find((row) => labelPattern.test(row.label))?.value;
+};
+
+/** "Available", "Unavailable", "None" and their variants, read from a detail-table cell. */
+const isAvailable = (value: string | undefined): boolean => {
+  if (value === undefined) return false;
+  const head = value.split("\n")[0]?.trim().toLowerCase() ?? "";
+  return head.length > 0 && !/^(unavailable|none|no\b|not available|-)/.test(head);
+};
+
+interface EnrichOption {
+  near: NearOption | undefined;
+  at: WallClock | undefined;
+  wantPrivateRoom: boolean;
+  wantParking: boolean;
+}
+
+/**
+ * near, openAt, privateRoom and parking all need the restaurant page
+ * (coordinates live in its JSON-LD, hours and facilities in its info table),
+ * so one fetch per card serves all of them.
+ */
+const enrich = async (itemList: SearchItem[], option: EnrichOption): Promise<SearchItem[]> => {
+  return mapLimit(itemList, DETAIL_CONCURRENCY, async (item) => {
     try {
       const page = await detailOf(await resolveRestaurant(item.url), "en");
       const hasGeo = page.latitude !== undefined && page.longitude !== undefined;
       return {
         ...item,
         distanceM:
-          near && hasGeo
-            ? distanceM(near.point, { latitude: page.latitude as number, longitude: page.longitude as number })
+          option.near && hasGeo
+            ? distanceM(option.near.point, { latitude: page.latitude as number, longitude: page.longitude as number })
             : undefined,
-        openStatus: at ? openStatusAt(page.hourList, at) : undefined,
-        hourList: at ? page.hourList : undefined,
+        openStatus: option.at ? openStatusAt(page.hourList, option.at) : undefined,
+        hourList: option.at ? page.hourList : undefined,
+        privateRoom: option.wantPrivateRoom ? infoValue(page, /private room/i) : undefined,
+        parking: option.wantParking ? infoValue(page, /^parking/i) : undefined,
       };
     } catch {
       // A single page failing must not sink the whole search; the card stays with unknowns.
-      return { ...item, openStatus: at ? "unknown" : undefined };
+      return { ...item, openStatus: option.at ? "unknown" : undefined };
     }
   });
+};
+
+const fetchCardList = async (
+  locale: Locale,
+  query: URLSearchParams,
+  page: number,
+): Promise<{ url: string; itemList: SearchItem[]; count: Pick<SearchResult, "from" | "to" | "total"> }> => {
+  const path = page > 1 ? `rstLst/${page}/` : "rstLst/";
+  const url = `${localeUrl(locale, path)}?${query.toString()}`;
+  const { body } = await fetchHtml(url);
+  const itemList = splitBy(body, CARD_MARKER)
+    .map(parseCard)
+    .filter((item): item is SearchItem => item !== undefined);
+  const count = parseCount(body);
+  // A genuinely empty result still renders the counter (0). Neither cards nor a
+  // counter means the markup moved, and that must not pass as "no results".
+  if (!itemList.length && count.total === undefined) {
+    throw new Error(`Could not find result cards or a result count at ${url}. Tabelog markup may have changed.`);
+  }
+  return { url, itemList, count };
 };
 
 export const search = async (option: SearchOption): Promise<SearchResult> => {
   if (!option.area && !option.genre && !option.keyword && !option.near) {
     throw new Error("Give at least one of area, genre, keyword or near.");
   }
-  const page = option.page && option.page > 1 ? Math.floor(option.page) : 1;
+  const firstPage = option.page && option.page > 1 ? Math.floor(option.page) : 1;
+  // A radius search deserves a wider net by default: the list is in score order, not distance order.
+  const pageCount = Math.min(MAX_PAGE_COUNT, Math.max(1, Math.floor(option.pages ?? (option.near ? 2 : 1))));
+  const noteList: string[] = [];
 
   const query = new URLSearchParams();
   query.set("SrtT", SORT_CODE_MAP[option.sort ?? "rating"]);
 
+  // Area: named, or derived from the coordinates when only `near` was given.
   let resolvedArea: string | undefined;
+  /** The station `near` was measured against, with every name it goes by, for the distance shortcut. */
+  let stationPoint: (GeoPoint & { nameList: string[]; name: string; distanceM: number }) | undefined;
   if (option.area) {
     const area = await suggestArea(option.area);
     if (!area) throw new Error(`No Tabelog area matches "${option.area}". Try an English or Japanese place name.`);
     resolvedArea = `${area.name} (${area.datatype})`;
-    query.set("pal", area.pal);
-    query.set("LstPrf", area.lstPrf);
-    query.set("LstAre", area.lstAre);
-    query.set("station_id", area.stationId);
-    query.set("area_datatype", area.datatype);
-    query.set("area_id", area.id);
+    applyArea(query, area);
+  } else if (option.near) {
+    const located = await locate(option.near.point);
+    const best = located.candidateList[0];
+    if (!best) throw new Error("locate returned no candidate");
+    applyArea(query, best.area);
+    resolvedArea = `${best.area.name} (${best.area.datatype}), picked from coordinates${
+      best.distanceM === undefined ? "" : `, ${best.distanceM}m from the point`
+    }`;
+    if (best.station) {
+      const name = best.station.nameEn ?? best.station.name;
+      stationPoint = {
+        latitude: best.station.latitude,
+        longitude: best.station.longitude,
+        name,
+        // OSM's name, its English name and Tabelog's own label for the same
+        // station all differ; a card may print any of them.
+        nameList: [...new Set([name, best.station.name, best.area.name.replace(/\uff08[^\uff09]*\uff09/, "")])],
+        distanceM: best.station.distanceM,
+      };
+    }
   }
 
   // The genre index only knows Tabelog's own labels ("Kushi-age", not
@@ -273,58 +388,129 @@ export const search = async (option: SearchOption): Promise<SearchResult> => {
       wordList.push(option.genre.trim());
     }
   }
-
   if (wordList.length) query.set("sw", wordList.join(" "));
 
-  const budgetNote = option.budget ? applyBudget(query, option.budget) : undefined;
-  const vacancyNote = option.vacancy ? applyVacancy(query, option.vacancy) : undefined;
+  if (option.budget) noteList.push(applyBudget(query, option.budget));
+  if (option.vacancy) noteList.push(applyVacancy(query, option.vacancy));
 
-  const path = page > 1 ? `rstLst/${page}/` : "rstLst/";
-  const url = `${localeUrl(option.locale, path)}?${query.toString()}`;
-  const { body } = await fetchHtml(url);
-
-  let itemList = splitBy(body, CARD_MARKER)
-    .map(parseCard)
-    .filter((item): item is SearchItem => item !== undefined);
-  const count = parseCount(body);
-
-  // A genuinely empty result still renders the counter (0). Neither cards nor a
-  // counter means the markup moved, and that must not pass as "no results".
-  if (!itemList.length && count.total === undefined) {
-    throw new Error(`Could not find result cards or a result count at ${url}. Tabelog markup may have changed.`);
+  // Read the list pages. Cards come back in the requested locale; the feature
+  // filter and the station-distance shortcut both need Tabelog's English
+  // wording, so on another locale the English pages are read as well and joined
+  // by restaurant id. A list page is one request against twenty for details, so
+  // this is cheap next to what it saves.
+  const wantFeature = (option.featureList?.length ?? 0) > 0;
+  const wantEnglishCard =
+    option.locale !== "en" && (wantFeature || (option.near?.radiusM !== undefined && stationPoint !== undefined));
+  const pageList = Array.from({ length: pageCount }, (_, index) => firstPage + index);
+  const localePageList = await mapLimit(pageList, 3, (page) => fetchCardList(option.locale, query, page));
+  const englishCardMap = new Map<string, SearchItem>();
+  if (wantEnglishCard) {
+    const englishPageList = await mapLimit(pageList, 3, (page) => fetchCardList("en", query, page));
+    for (const page of englishPageList) for (const item of page.itemList) englishCardMap.set(item.id, item);
   }
-  const pageCount = itemList.length;
+
+  const first = localePageList[0];
+  if (!first) throw new Error("no list page fetched");
+  let itemList = localePageList.flatMap((page) => page.itemList);
+  const scannedCount = itemList.length;
+  if (pageCount > 1)
+    noteList.push(`read ${localePageList.length} pages (${scannedCount} restaurants) starting at page ${firstPage}`);
+
+  // Cheap filters first, from what the cards already say.
+  if (option.minRating !== undefined) {
+    const min = option.minRating;
+    itemList = itemList.filter((item) => item.rating !== undefined && item.rating >= min);
+    noteList.push(`rating >= ${min}`);
+  }
+  if (option.minReviewCount !== undefined) {
+    const min = option.minReviewCount;
+    itemList = itemList.filter((item) => (item.reviewCount ?? 0) >= min);
+    noteList.push(`reviews >= ${min}`);
+  }
+  if (wantFeature) {
+    const wantList = (option.featureList ?? []).map((text) => text.trim().toLowerCase()).filter(Boolean);
+    itemList = itemList.filter((item) => {
+      const tagText = (englishCardMap.get(item.id)?.featureList ?? item.featureList).join(" | ").toLowerCase();
+      return wantList.every((want) => tagText.includes(want));
+    });
+    noteList.push(`features: ${wantList.join(", ")}`);
+  }
+
+  // Before paying a page fetch per card, drop cards whose own "Station NNNm"
+  // proves they cannot be inside the radius: a restaurant within r of the
+  // point is within r + d(point, station) of that station.
+  const near = option.near;
+  if (near?.radiusM !== undefined && stationPoint) {
+    const bound = near.radiusM + stationPoint.distanceM;
+    const before = itemList.length;
+    itemList = itemList.filter((item) => {
+      const shown = stationDistanceOf(englishCardMap.get(item.id) ?? item);
+      // Only the station the point was measured from bounds the distance; a card
+      // measured from some other station says nothing about this radius.
+      const isSame = stationPoint.nameList.some((name) => sameStation(shown?.station ?? "", name));
+      if (!shown || !isSame) return true;
+      return shown.metre <= bound;
+    });
+    if (before !== itemList.length) {
+      noteList.push(`${before - itemList.length} skipped by their listed distance from ${stationPoint.name}`);
+    }
+  }
 
   const at = option.openAt === undefined ? undefined : parseJapanTime(option.openAt);
-  let nearNote: string | undefined;
-  let openAtNote: string | undefined;
-  if ((option.near || at) && itemList.length) {
-    itemList = await enrich(itemList, option.near, at);
-    if (option.near) {
-      const { point, radiusM } = option.near;
-      itemList = itemList
-        .filter((item) => item.distanceM !== undefined && (radiusM === undefined || item.distanceM <= radiusM))
-        .sort((a, b) => (a.distanceM ?? 0) - (b.distanceM ?? 0));
-      nearNote = `sorted by distance from ${point.latitude},${point.longitude}${radiusM === undefined ? "" : ` within ${radiusM}m`} (this page only)`;
+  const wantPrivateRoom = option.privateRoom === true;
+  const wantParking = option.parking === true;
+  if ((near || at || wantPrivateRoom || wantParking) && itemList.length) {
+    itemList = await enrich(itemList, { near, at, wantPrivateRoom, wantParking });
+    if (near) {
+      itemList = itemList.filter(
+        (item) => item.distanceM !== undefined && (near.radiusM === undefined || item.distanceM <= near.radiusM),
+      );
+      noteList.push(
+        `near: ${near.point.latitude},${near.point.longitude}${near.radiusM === undefined ? "" : ` within ${near.radiusM}m`}`,
+      );
     }
     if (at) {
       const dropped = itemList.filter((item) => item.openStatus === "closed").length;
       itemList = itemList.filter((item) => item.openStatus !== "closed");
-      openAtNote = `open at ${at.label}; ${dropped} closed dropped, "unknown" kept (no parsable hours)`;
+      noteList.push(`open at ${at.label}: ${dropped} closed dropped, "unknown" kept (no parsable hours)`);
+    }
+    if (wantPrivateRoom) {
+      itemList = itemList.filter((item) => isAvailable(item.privateRoom));
+      noteList.push("private room: available");
+    }
+    if (wantParking) {
+      itemList = itemList.filter((item) => isAvailable(item.parking));
+      noteList.push("parking: available");
     }
   }
 
+  // The list is in score order over the whole area, so a tight radius keeps few
+  // of any one page. Say so rather than letting a short list read as "that is all".
+  if (near?.radiusM !== undefined && itemList.length < 5 && localePageList.length < MAX_PAGE_COUNT) {
+    noteList.push(
+      `only ${itemList.length} within the radius on these pages; raise pages (up to ${MAX_PAGE_COUNT}) to scan further`,
+    );
+  }
+
+  const order: Order = option.order ?? (near ? "distance" : "site");
+  if (order === "distance") {
+    itemList.sort((a, b) => (a.distanceM ?? Number.POSITIVE_INFINITY) - (b.distanceM ?? Number.POSITIVE_INFINITY));
+  } else if (order === "review_count") {
+    itemList.sort((a, b) => (b.reviewCount ?? 0) - (a.reviewCount ?? 0));
+  } else if (order === "rating") {
+    itemList.sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
+  }
+  if (order !== "site") noteList.push(`ordered by ${order}`);
+
   return {
-    url,
+    url: first.url,
     resolvedArea,
     resolvedGenre,
-    budgetNote,
-    vacancyNote,
-    nearNote,
-    openAtNote,
-    ...count,
-    page,
-    pageCount,
+    noteList,
+    ...first.count,
+    page: firstPage,
+    pageCount: localePageList.length,
+    scannedCount,
     itemList,
   };
 };

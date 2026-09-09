@@ -1,4 +1,4 @@
-import { fetchJson, localeUrl } from "../http";
+import { BASE_URL, fetchJson, localeUrl } from "../http";
 
 /**
  * The keyword suggest endpoint is what the /en/ search box calls as you type.
@@ -126,4 +126,45 @@ export const suggestArea = async (keyword: string): Promise<AreaSuggest | undefi
 export const suggestGenre = async (keyword: string): Promise<GenreSuggest | undefined> => {
   const list = (await suggest(keyword)).filter((item): item is GenreSuggest => item.kind === "genre");
   return list.find((item) => item.exact) ?? list[0];
+};
+
+/**
+ * The Japanese site's search-form suggest (web-api/v1) is not behind the
+ * Cloudflare challenge and, unlike the inbound suggest, returns coordinates for
+ * stations. It shares station ids with the inbound index, which lets a station
+ * found by name be checked against where it actually is.
+ */
+export interface StationCandidate {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+}
+
+interface RawWebApiSuggest {
+  name?: string;
+  type?: string;
+  typeId?: string | number;
+  latitude?: number;
+  longitude?: number;
+}
+
+export const stationCandidateList = async (keyword: string): Promise<StationCandidate[]> => {
+  const url = `${BASE_URL}/web-api/v1/search-suggestions/area?${new URLSearchParams({ area: keyword.trim() })}`;
+  const raw = await fetchJson<{ suggestResult?: RawWebApiSuggest[] }>(url);
+  return (raw.suggestResult ?? [])
+    .filter(
+      (item) =>
+        item.type === "RailroadStation" &&
+        typeof item.latitude === "number" &&
+        typeof item.longitude === "number" &&
+        item.latitude !== 0 &&
+        item.typeId !== undefined,
+    )
+    .map((item) => ({
+      id: String(item.typeId),
+      name: item.name ?? "",
+      latitude: item.latitude as number,
+      longitude: item.longitude as number,
+    }));
 };

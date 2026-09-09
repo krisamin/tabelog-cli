@@ -1,8 +1,10 @@
 import type { Detail } from "./command/detail";
+import type { LocateResult } from "./command/locate";
 import { type MenuResult, menuItemCount } from "./command/menu";
+import type { NearbyResult } from "./command/nearby";
 import type { PhotoResult } from "./command/photo";
 import type { RatingResult } from "./command/rating";
-import type { ReviewResult } from "./command/review";
+import type { ReviewReadResult, ReviewResult } from "./command/review";
 import type { SearchResult } from "./command/search";
 import type { Suggest } from "./command/suggest";
 import type { VacancyResult } from "./command/vacancy";
@@ -26,15 +28,12 @@ export const renderSuggest = (list: Suggest[]): string => {
 };
 
 export const renderSearch = (result: SearchResult): string => {
-  const filtered = result.itemList.length !== result.pageCount;
+  const filtered = result.itemList.length !== result.scannedCount;
   const headList = defined([
-    `${show(result.from)}-${show(result.to)} of ${show(result.total)} (page ${result.page}${filtered ? `, ${result.itemList.length} of ${result.pageCount} kept after filters` : ""})`,
+    `${show(result.from)}-${show(result.to)} of ${show(result.total)} (page ${result.page}${result.pageCount > 1 ? `-${result.page + result.pageCount - 1}` : ""}${filtered ? `, ${result.itemList.length} of ${result.scannedCount} kept after filters` : ""})`,
     result.resolvedArea ? `area: ${result.resolvedArea}` : undefined,
     result.resolvedGenre ? `genre: ${result.resolvedGenre}` : undefined,
-    result.budgetNote ? `budget: ${result.budgetNote}` : undefined,
-    result.vacancyNote ? `vacancy: ${result.vacancyNote}` : undefined,
-    result.nearNote ? `near: ${result.nearNote}` : undefined,
-    result.openAtNote ? `open: ${result.openAtNote}` : undefined,
+    ...result.noteList.map((note) => `- ${note}`),
     result.url,
   ]);
 
@@ -42,6 +41,8 @@ export const renderSearch = (result: SearchResult): string => {
     const tagList = defined([
       item.distanceM === undefined ? undefined : formatDistance(item.distanceM),
       item.openStatus === undefined ? undefined : item.openStatus,
+      item.privateRoom === undefined ? undefined : `private room: ${item.privateRoom.split("\n")[0]}`,
+      item.parking === undefined ? undefined : `parking: ${item.parking.split("\n")[0]}`,
     ]);
     return defined([
       `${show(item.rank, "").padStart(2)} ${item.name}  ${show(item.rating)} (${show(item.reviewCount, "0")} reviews)  id=${item.id}${tagList.length ? `  [${tagList.join(", ")}]` : ""}`,
@@ -56,6 +57,45 @@ export const renderSearch = (result: SearchResult): string => {
   });
 
   return [...headList, "", ...(bodyList.length ? bodyList : ["No results."])].join("\n");
+};
+
+export const renderNearby = (result: NearbyResult): string => {
+  const headList = defined([
+    `${result.itemList.length} restaurants around ${result.anchorId} (Tabelog's nearest list, ${result.pageCount} pages)`,
+    result.resolvedGenre ? `genre: ${result.resolvedGenre}` : undefined,
+    result.url,
+    "",
+  ]);
+  const bodyList = result.itemList.map((item) =>
+    defined([
+      `${item.distanceM === undefined ? "     " : formatDistance(item.distanceM).padStart(5)}  ${item.name}  ${show(item.rating)} (${show(item.reviewCount, "0")} reviews)  id=${item.id}`,
+      `       ${show(item.areaGenre, "")}`,
+      `       ${item.url}`,
+    ]).join("\n"),
+  );
+  return [...headList, ...(bodyList.length ? bodyList : ["Nothing listed."])].join("\n");
+};
+
+export const renderLocate = (result: LocateResult): string => {
+  const lineList = [`${result.point.latitude},${result.point.longitude}`];
+  if (result.address) lineList.push(`address: ${result.address}`);
+  lineList.push("", "Tabelog areas, best first:");
+  for (const candidate of result.candidateList) {
+    lineList.push(
+      `  ${candidate.area.name}  (${candidate.area.datatype} ${candidate.area.id})${
+        candidate.distanceM === undefined ? "" : `  ${formatDistance(candidate.distanceM)} away`
+      }`,
+    );
+  }
+  if (result.stationList.length) {
+    lineList.push("", "stations nearby (OpenStreetMap):");
+    for (const station of result.stationList.slice(0, 8)) {
+      lineList.push(
+        `  ${formatDistance(station.distanceM).padStart(5)}  ${station.name}${station.nameEn ? ` / ${station.nameEn}` : ""}`,
+      );
+    }
+  }
+  return lineList.join("\n");
 };
 
 export const renderDetail = (item: Detail): string => {
@@ -197,4 +237,17 @@ export const renderVacancy = (result: VacancyResult): string => {
 const minuteOf = (time: string): number => {
   const [hh, mm] = time.split(":").map(Number);
   return (hh ?? 0) * 60 + (mm ?? 0);
+};
+
+export const renderReviewRead = (result: ReviewReadResult): string => {
+  const headList = [`${show(result.reviewer)}${result.reviewerUrl ? `  ${result.reviewerUrl}` : ""}`, result.url, ""];
+  const bodyList = result.visitList.map((visit) =>
+    defined([
+      `${show(visit.rating)} ${show(visit.time, "")}  ${show(visit.visited, "")} ${show(visit.visitCount, "")}${visit.spend ? `  spend ${visit.spend}` : ""}`,
+      visit.title ? `## ${visit.title}` : undefined,
+      visit.text,
+      visit.imageUrlList.length ? visit.imageUrlList.join("\n") : undefined,
+    ]).join("\n"),
+  );
+  return [...headList, ...bodyList].join("\n\n");
 };

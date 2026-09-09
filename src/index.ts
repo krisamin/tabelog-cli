@@ -1,11 +1,13 @@
 #!/usr/bin/env bun
 import pkg from "../package.json" with { type: "json" };
 import { detail } from "./command/detail";
+import { locate } from "./command/locate";
 import { menu } from "./command/menu";
+import { nearby } from "./command/nearby";
 import { photo } from "./command/photo";
 import { rating } from "./command/rating";
-import { isUseType, review, USE_TYPE_LIST } from "./command/review";
-import { isMeal, isSort, MEAL_LIST, SORT_LIST, search } from "./command/search";
+import { isUseType, review, reviewRead, USE_TYPE_LIST } from "./command/review";
+import { isMeal, isOrder, isSort, MEAL_LIST, ORDER_LIST, SORT_LIST, search } from "./command/search";
 import { suggest } from "./command/suggest";
 import { vacancy } from "./command/vacancy";
 import { parseGeoPoint } from "./geo";
@@ -13,10 +15,13 @@ import { DEFAULT_LOCALE, isLocale, LOCALE_LIST, type Locale } from "./http";
 import { runMcp } from "./mcp/server";
 import {
   renderDetail,
+  renderLocate,
   renderMenu,
+  renderNearby,
   renderPhoto,
   renderRating,
   renderReview,
+  renderReviewRead,
   renderSearch,
   renderSuggest,
   renderVacancy,
@@ -31,10 +36,14 @@ Usage:
                  [--budget-meal ${MEAL_LIST.join("|")}] [--budget-min <yen>] [--budget-max <yen>]
                  [--vacancy] [--vacancy-date <YYYY-MM-DD>] [--vacancy-time <HH:MM>] [--vacancy-people <n>]
                  [--near <lat,lng>] [--radius-m <m>] [--open-at now|"<YYYY-MM-DD HH:MM>"]
-                                            list restaurants (20 per page, Tabelog score order by default)
+                 [--pages <1-5>] [--min-rating <n>] [--min-review-count <n>] [--feature <a,b>]
+                 [--private-room] [--parking] [--order ${ORDER_LIST.join("|")}]
+                                            list restaurants (20 per page, Tabelog score order by default;
+                                            --near alone picks the nearest station as the area)
   tabelog detail <url|id>                   restaurant page: score, address, weekly hours, prices, seats, ...
   tabelog review <url|id> [--page <n>] [--use-type ${USE_TYPE_LIST.join("|")}] [--by-visit]
                                             reviews, 20 per page
+  tabelog review-read <review-url>          one reviewer's full review page
   tabelog menu <url|id> [--kind ${MENU_KIND_LIST.join("|")}]
                                             posted menu with prices
   tabelog rating <url|id>                   per-aspect averages, score distribution, spending distribution
@@ -42,6 +51,9 @@ Usage:
                                             photo URLs with captions
   tabelog vacancy <url|id> [--date <YYYY-MM-DD>] [--time <HH:MM>] [--people <n>]
                                             online-booking calendar and time slots (read-only)
+  tabelog nearby <url|id> [--genre <name>] [--pages <1-5>]
+                                            Tabelog's 25 nearest restaurants around one restaurant
+  tabelog locate <lat,lng>                  which Tabelog areas coordinates fall in (via nearby stations)
   tabelog suggest <keyword>                 what a keyword resolves to (areas, genres, restaurants)
   tabelog mcp                               serve the same commands as MCP tools over stdio
 
@@ -74,6 +86,11 @@ const VALUE_FLAG_SET = new Set([
   "near",
   "radius-m",
   "open-at",
+  "pages",
+  "min-rating",
+  "min-review-count",
+  "feature",
+  "order",
   "kind",
   "mode",
   "date",
@@ -210,6 +227,16 @@ const main = async (): Promise<void> => {
             ? undefined
             : { point: parseGeoPoint(near), radiusM: num(flagMap["radius-m"], "radius-m") },
         openAt: str(flagMap["open-at"]),
+        pages: num(flagMap.pages, "pages"),
+        minRating: num(flagMap["min-rating"], "min-rating"),
+        minReviewCount: num(flagMap["min-review-count"], "min-review-count"),
+        featureList: str(flagMap.feature)
+          ?.split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+        privateRoom: flagMap["private-room"] === true,
+        parking: flagMap.parking === true,
+        order: choice(flagMap.order, "order", ORDER_LIST, isOrder),
         locale,
       });
       emit(json, result, renderSearch(result));
@@ -228,6 +255,25 @@ const main = async (): Promise<void> => {
         locale,
       });
       emit(json, result, renderReview(result));
+      break;
+    }
+    case "review-read": {
+      const result = await reviewRead(targetOf(restList, "tabelog review-read <review-url>"), locale);
+      emit(json, result, renderReviewRead(result));
+      break;
+    }
+    case "nearby": {
+      const result = await nearby(targetOf(restList, "tabelog nearby <url|id>"), {
+        genre: str(flagMap.genre),
+        pages: num(flagMap.pages, "pages"),
+        locale,
+      });
+      emit(json, result, renderNearby(result));
+      break;
+    }
+    case "locate": {
+      const result = await locate(parseGeoPoint(targetOf(restList, "tabelog locate <lat,lng>")));
+      emit(json, result, renderLocate(result));
       break;
     }
     case "menu": {
