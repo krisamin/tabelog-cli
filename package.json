@@ -1,0 +1,25 @@
+{
+  "name": "@krisamin/tabelog-cli",
+  "version": "0.1.0",
+  "description": "Tabelog CLI and MCP server: search restaurants, read details and reviews without a browser",
+  "license": "MIT",
+  "author": "krisamin",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/krisamin/tabelog-cli.git"
+  },
+  "type": "module",
+  "bin": {
+    "tabelog": "src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.2",
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.7.0"
+  }
+}
