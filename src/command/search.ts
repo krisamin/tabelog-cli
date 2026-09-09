@@ -1,5 +1,10 @@
+import { distanceM, type GeoPoint, mapLimit } from "../geo";
+import { type HourGroup, type OpenStatus, openStatusAt } from "../hour";
 import { attrOf, classText, pick, pickAll, splitBy, toNumber } from "../html";
 import { fetchHtml, type Locale, localeUrl } from "../http";
+import { parseJapanTime, toSvd, toSvt, type WallClock } from "../time";
+import { resolveRestaurant } from "../url";
+import { detailOf } from "./detail";
 import { suggestArea, suggestGenre } from "./suggest";
 
 export const SORT_LIST = ["rating", "access", "reserved"] as const;
@@ -17,6 +22,64 @@ export const isSort = (value: unknown): value is Sort => {
   return typeof value === "string" && (SORT_LIST as readonly string[]).includes(value);
 };
 
+export const MEAL_LIST = ["dinner", "lunch"] as const;
+export type Meal = (typeof MEAL_LIST)[number];
+
+export const isMeal = (value: unknown): value is Meal => {
+  return typeof value === "string" && (MEAL_LIST as readonly string[]).includes(value);
+};
+
+/**
+ * Budget bands behind LstCos (lower) / LstCosT (upper), verified against the
+ * prices the filtered list returns. Index 0 means no bound. There is no band
+ * for "under 1,000" on the inbound site, so a ceiling below 1,000 still lets
+ * 1,000-1,999 through.
+ */
+const BUDGET_BAND_LIST: { index: number; min: number; max: number }[] = [
+  { index: 1, min: 1000, max: 1999 },
+  { index: 2, min: 2000, max: 2999 },
+  { index: 3, min: 3000, max: 3999 },
+  { index: 4, min: 4000, max: 4999 },
+  { index: 5, min: 5000, max: 5999 },
+  { index: 6, min: 6000, max: 7999 },
+  { index: 7, min: 8000, max: 9999 },
+  { index: 8, min: 10000, max: 14999 },
+  { index: 9, min: 15000, max: 19999 },
+  { index: 10, min: 20000, max: 29999 },
+  { index: 11, min: 30000, max: 39999 },
+  { index: 12, min: 40000, max: 49999 },
+  { index: 13, min: 50000, max: 59999 },
+  { index: 14, min: 60000, max: 79999 },
+  { index: 15, min: 80000, max: 99999 },
+  { index: 16, min: 100000, max: Number.POSITIVE_INFINITY },
+];
+
+const bandContaining = (yen: number): number => {
+  return BUDGET_BAND_LIST.find((band) => yen >= band.min && yen <= band.max)?.index ?? 0;
+};
+
+export interface BudgetOption {
+  meal: Meal;
+  /** Yen. */
+  min?: number;
+  max?: number;
+}
+
+export interface VacancyFilter {
+  /** YYYY-MM-DD. Defaults to today in Japan. */
+  date?: string;
+  /** HH:MM. Defaults to 19:00. */
+  time?: string;
+  /** Party size. Defaults to 2. */
+  people?: number;
+}
+
+export interface NearOption {
+  point: GeoPoint;
+  /** Metres. Results farther than this are dropped. Omit to keep all, sorted by distance. */
+  radiusM?: number;
+}
+
 export interface SearchOption {
   /** Area name in English or Japanese: a station, town, ward, city or prefecture. Resolved via suggest. */
   area?: string;
@@ -26,6 +89,13 @@ export interface SearchOption {
   keyword?: string;
   sort?: Sort;
   page?: number;
+  budget?: BudgetOption;
+  /** Only restaurants with an online-bookable table at that date/time/party size. */
+  vacancy?: VacancyFilter;
+  /** Sort (and optionally cut) by straight-line distance from a point. Costs one page fetch per result. */
+  near?: NearOption;
+  /** Keep only restaurants open at this Japan wall-clock time ("now" or "YYYY-MM-DD HH:MM"). Costs one page fetch per result. */
+  openAt?: string;
   locale: Locale;
 }
 
@@ -44,16 +114,27 @@ export interface SearchItem {
   awardList: string[];
   catchphrase: string | undefined;
   featureList: string[];
+  /** Filled when `near` was given. */
+  distanceM: number | undefined;
+  /** Filled when `openAt` was given. */
+  openStatus: OpenStatus | undefined;
+  hourList: HourGroup[] | undefined;
 }
 
 export interface SearchResult {
   url: string;
   resolvedArea: string | undefined;
   resolvedGenre: string | undefined;
+  budgetNote: string | undefined;
+  vacancyNote: string | undefined;
+  nearNote: string | undefined;
+  openAtNote: string | undefined;
   from: number | undefined;
   to: number | undefined;
   total: number | undefined;
   page: number;
+  /** How many cards the page had before near/openAt post-filters. */
+  pageCount: number;
   itemList: SearchItem[];
 }
 
@@ -84,6 +165,9 @@ const parseCard = (card: string): SearchItem | undefined => {
     awardList: pickAll(card, /class="c-badge-(?:award|hyakumeiten)[^"]*"><i>([^<]*)<\/i>/g),
     catchphrase: classText(card, "list-rst__pr-title"),
     featureList: pickAll(card, /list-rst__search-word-item">([\s\S]*?)<\/li>/g),
+    distanceM: undefined,
+    openStatus: undefined,
+    hourList: undefined,
   };
 };
 
@@ -100,9 +184,60 @@ const parseCount = (html: string): Pick<SearchResult, "from" | "to" | "total"> =
   return { from, to, total };
 };
 
+const applyBudget = (query: URLSearchParams, budget: BudgetOption): string => {
+  query.set("RdoCosTp", budget.meal === "dinner" ? "2" : "1");
+  const lower = budget.min === undefined ? 0 : bandContaining(budget.min);
+  const upper = budget.max === undefined ? 0 : bandContaining(Math.max(budget.max, 1000));
+  if (lower) query.set("LstCos", String(lower));
+  if (upper) query.set("LstCosT", String(upper));
+  const lowerText = budget.min === undefined ? "" : `from JPY ${budget.min.toLocaleString("en-US")}`;
+  const upperText = budget.max === undefined ? "" : `up to JPY ${budget.max.toLocaleString("en-US")}`;
+  return `${budget.meal} ${[lowerText, upperText].filter(Boolean).join(" ")} (Tabelog bands ${lower || "-"}..${upper || "-"})`;
+};
+
+const applyVacancy = (query: URLSearchParams, vacancy: VacancyFilter): string => {
+  const svd = toSvd(vacancy.date);
+  const svt = toSvt(vacancy.time ?? "19:00");
+  const people = vacancy.people && vacancy.people > 0 ? Math.floor(vacancy.people) : 2;
+  query.set("svd", svd);
+  query.set("svt", svt);
+  query.set("svps", String(people));
+  query.set("vac_net", "1");
+  return `online-bookable on ${svd.slice(0, 4)}-${svd.slice(4, 6)}-${svd.slice(6, 8)} at ${svt.slice(0, 2)}:${svt.slice(2)} for ${people}`;
+};
+
+/**
+ * near and openAt both need the restaurant page (coordinates live in its
+ * JSON-LD, hours in its info table), so one fetch per card serves both.
+ */
+const enrich = async (
+  itemList: SearchItem[],
+  near: NearOption | undefined,
+  at: WallClock | undefined,
+): Promise<SearchItem[]> => {
+  return mapLimit(itemList, 6, async (item) => {
+    try {
+      const page = await detailOf(await resolveRestaurant(item.url), "en");
+      const hasGeo = page.latitude !== undefined && page.longitude !== undefined;
+      return {
+        ...item,
+        distanceM:
+          near && hasGeo
+            ? distanceM(near.point, { latitude: page.latitude as number, longitude: page.longitude as number })
+            : undefined,
+        openStatus: at ? openStatusAt(page.hourList, at) : undefined,
+        hourList: at ? page.hourList : undefined,
+      };
+    } catch {
+      // A single page failing must not sink the whole search; the card stays with unknowns.
+      return { ...item, openStatus: at ? "unknown" : undefined };
+    }
+  });
+};
+
 export const search = async (option: SearchOption): Promise<SearchResult> => {
-  if (!option.area && !option.genre && !option.keyword) {
-    throw new Error("Give at least one of area, genre or keyword.");
+  if (!option.area && !option.genre && !option.keyword && !option.near) {
+    throw new Error("Give at least one of area, genre, keyword or near.");
   }
   const page = option.page && option.page > 1 ? Math.floor(option.page) : 1;
 
@@ -141,11 +276,14 @@ export const search = async (option: SearchOption): Promise<SearchResult> => {
 
   if (wordList.length) query.set("sw", wordList.join(" "));
 
+  const budgetNote = option.budget ? applyBudget(query, option.budget) : undefined;
+  const vacancyNote = option.vacancy ? applyVacancy(query, option.vacancy) : undefined;
+
   const path = page > 1 ? `rstLst/${page}/` : "rstLst/";
   const url = `${localeUrl(option.locale, path)}?${query.toString()}`;
   const { body } = await fetchHtml(url);
 
-  const itemList = splitBy(body, CARD_MARKER)
+  let itemList = splitBy(body, CARD_MARKER)
     .map(parseCard)
     .filter((item): item is SearchItem => item !== undefined);
   const count = parseCount(body);
@@ -155,6 +293,38 @@ export const search = async (option: SearchOption): Promise<SearchResult> => {
   if (!itemList.length && count.total === undefined) {
     throw new Error(`Could not find result cards or a result count at ${url}. Tabelog markup may have changed.`);
   }
+  const pageCount = itemList.length;
 
-  return { url, resolvedArea, resolvedGenre, ...count, page, itemList };
+  const at = option.openAt === undefined ? undefined : parseJapanTime(option.openAt);
+  let nearNote: string | undefined;
+  let openAtNote: string | undefined;
+  if ((option.near || at) && itemList.length) {
+    itemList = await enrich(itemList, option.near, at);
+    if (option.near) {
+      const { point, radiusM } = option.near;
+      itemList = itemList
+        .filter((item) => item.distanceM !== undefined && (radiusM === undefined || item.distanceM <= radiusM))
+        .sort((a, b) => (a.distanceM ?? 0) - (b.distanceM ?? 0));
+      nearNote = `sorted by distance from ${point.latitude},${point.longitude}${radiusM === undefined ? "" : ` within ${radiusM}m`} (this page only)`;
+    }
+    if (at) {
+      const dropped = itemList.filter((item) => item.openStatus === "closed").length;
+      itemList = itemList.filter((item) => item.openStatus !== "closed");
+      openAtNote = `open at ${at.label}; ${dropped} closed dropped, "unknown" kept (no parsable hours)`;
+    }
+  }
+
+  return {
+    url,
+    resolvedArea,
+    resolvedGenre,
+    budgetNote,
+    vacancyNote,
+    nearNote,
+    openAtNote,
+    ...count,
+    page,
+    pageCount,
+    itemList,
+  };
 };

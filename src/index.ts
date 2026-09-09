@@ -1,22 +1,47 @@
 #!/usr/bin/env bun
 import pkg from "../package.json" with { type: "json" };
 import { detail } from "./command/detail";
+import { menu } from "./command/menu";
+import { photo } from "./command/photo";
+import { rating } from "./command/rating";
 import { isUseType, review, USE_TYPE_LIST } from "./command/review";
-import { isSort, SORT_LIST, search } from "./command/search";
+import { isMeal, isSort, MEAL_LIST, SORT_LIST, search } from "./command/search";
 import { suggest } from "./command/suggest";
+import { vacancy } from "./command/vacancy";
+import { parseGeoPoint } from "./geo";
 import { DEFAULT_LOCALE, isLocale, LOCALE_LIST, type Locale } from "./http";
 import { runMcp } from "./mcp/server";
-import { renderDetail, renderReview, renderSearch, renderSuggest } from "./render";
+import {
+  renderDetail,
+  renderMenu,
+  renderPhoto,
+  renderRating,
+  renderReview,
+  renderSearch,
+  renderSuggest,
+  renderVacancy,
+} from "./render";
+import { MENU_KIND_LIST, type MenuKind, PHOTO_MODE_LIST, type PhotoMode } from "./url";
 
 const HELP = `tabelog: Tabelog CLI that reads the inbound site (tabelog.com/en, /kr) without a browser
 
 Usage:
   tabelog search [--area <name>] [--genre <name>] [--keyword <words>]
                  [--sort ${SORT_LIST.join("|")}] [--page <n>]
+                 [--budget-meal ${MEAL_LIST.join("|")}] [--budget-min <yen>] [--budget-max <yen>]
+                 [--vacancy] [--vacancy-date <YYYY-MM-DD>] [--vacancy-time <HH:MM>] [--vacancy-people <n>]
+                 [--near <lat,lng>] [--radius-m <m>] [--open-at now|"<YYYY-MM-DD HH:MM>"]
                                             list restaurants (20 per page, Tabelog score order by default)
-  tabelog detail <url|id>                   restaurant page: score, address, hours, prices, seats, ...
+  tabelog detail <url|id>                   restaurant page: score, address, weekly hours, prices, seats, ...
   tabelog review <url|id> [--page <n>] [--use-type ${USE_TYPE_LIST.join("|")}] [--by-visit]
                                             reviews, 20 per page
+  tabelog menu <url|id> [--kind ${MENU_KIND_LIST.join("|")}]
+                                            posted menu with prices
+  tabelog rating <url|id>                   per-aspect averages, score distribution, spending distribution
+  tabelog photo <url|id> [--page <n>] [--mode ${PHOTO_MODE_LIST.join("|")}]
+                                            photo URLs with captions
+  tabelog vacancy <url|id> [--date <YYYY-MM-DD>] [--time <HH:MM>] [--people <n>]
+                                            online-booking calendar and time slots (read-only)
   tabelog suggest <keyword>                 what a keyword resolves to (areas, genres, restaurants)
   tabelog mcp                               serve the same commands as MCP tools over stdio
 
@@ -28,10 +53,33 @@ Options:
 
 Area and genre names are matched against Tabelog's suggest index, which knows
 English and Japanese names (Sannomiya, 三宮, ramen, 焼鳥). Korean is not indexed.
+Times are Japan time. --near and --open-at read each result's page (slower).
 `;
 
 /** Flags that consume the next argument as their value. Everything else is boolean. */
-const VALUE_FLAG_SET = new Set(["area", "genre", "keyword", "sort", "page", "use-type", "locale"]);
+const VALUE_FLAG_SET = new Set([
+  "area",
+  "genre",
+  "keyword",
+  "sort",
+  "page",
+  "use-type",
+  "locale",
+  "budget-meal",
+  "budget-min",
+  "budget-max",
+  "vacancy-date",
+  "vacancy-time",
+  "vacancy-people",
+  "near",
+  "radius-m",
+  "open-at",
+  "kind",
+  "mode",
+  "date",
+  "time",
+  "people",
+]);
 
 interface ParsedArg {
   positionalList: string[];
@@ -72,9 +120,29 @@ const str = (value: string | boolean | undefined): string | undefined => {
 
 const num = (value: string | boolean | undefined, name: string): number | undefined => {
   if (typeof value !== "string") return undefined;
-  const parsed = Number(value);
+  const parsed = Number(value.replace(/,/g, ""));
   if (!Number.isFinite(parsed)) throw new Error(`--${name} must be a number.`);
   return parsed;
+};
+
+const choice = <T extends string>(
+  value: string | boolean | undefined,
+  name: string,
+  list: readonly T[],
+  guard: (value: unknown) => value is T,
+): T | undefined => {
+  const text = str(value);
+  if (text === undefined) return undefined;
+  if (!guard(text)) throw new Error(`--${name} must be one of ${list.join(", ")}.`);
+  return text;
+};
+
+const isMenuKind = (value: unknown): value is MenuKind => {
+  return typeof value === "string" && (MENU_KIND_LIST as readonly string[]).includes(value);
+};
+
+const isPhotoMode = (value: unknown): value is PhotoMode => {
+  return typeof value === "string" && (PHOTO_MODE_LIST as readonly string[]).includes(value);
 };
 
 const localeOf = (value: string | boolean | undefined): Locale => {
@@ -85,6 +153,12 @@ const localeOf = (value: string | boolean | undefined): Locale => {
 
 const emit = (json: boolean, data: unknown, text: string): void => {
   console.log(json ? JSON.stringify(data, null, 2) : text);
+};
+
+const targetOf = (restList: string[], usage: string): string => {
+  const target = restList[0];
+  if (!target) throw new Error(`Usage: ${usage}`);
+  return target;
 };
 
 const main = async (): Promise<void> => {
@@ -101,43 +175,91 @@ const main = async (): Promise<void> => {
   }
 
   const json = flagMap.json === true;
+  const locale = localeOf(flagMap.locale);
 
   switch (command) {
     case "search": {
-      const sort = str(flagMap.sort);
-      if (sort !== undefined && !isSort(sort)) throw new Error(`--sort must be one of ${SORT_LIST.join(", ")}.`);
+      const budgetMin = num(flagMap["budget-min"], "budget-min");
+      const budgetMax = num(flagMap["budget-max"], "budget-max");
+      const vacancyDate = str(flagMap["vacancy-date"]);
+      const vacancyTime = str(flagMap["vacancy-time"]);
+      const vacancyPeople = num(flagMap["vacancy-people"], "vacancy-people");
+      const wantVacancy =
+        flagMap.vacancy === true ||
+        vacancyDate !== undefined ||
+        vacancyTime !== undefined ||
+        vacancyPeople !== undefined;
+      const near = str(flagMap.near);
       const result = await search({
         area: str(flagMap.area),
         genre: str(flagMap.genre),
         keyword: str(flagMap.keyword) ?? (restList.length ? restList.join(" ") : undefined),
-        sort,
+        sort: choice(flagMap.sort, "sort", SORT_LIST, isSort),
         page: num(flagMap.page, "page"),
-        locale: localeOf(flagMap.locale),
+        budget:
+          budgetMin === undefined && budgetMax === undefined
+            ? undefined
+            : {
+                meal: choice(flagMap["budget-meal"], "budget-meal", MEAL_LIST, isMeal) ?? "dinner",
+                min: budgetMin,
+                max: budgetMax,
+              },
+        vacancy: wantVacancy ? { date: vacancyDate, time: vacancyTime, people: vacancyPeople } : undefined,
+        near:
+          near === undefined
+            ? undefined
+            : { point: parseGeoPoint(near), radiusM: num(flagMap["radius-m"], "radius-m") },
+        openAt: str(flagMap["open-at"]),
+        locale,
       });
       emit(json, result, renderSearch(result));
       break;
     }
     case "detail": {
-      const target = restList[0];
-      if (!target) throw new Error("Usage: tabelog detail <url|id>");
-      const result = await detail(target, localeOf(flagMap.locale));
+      const result = await detail(targetOf(restList, "tabelog detail <url|id>"), locale);
       emit(json, result, renderDetail(result));
       break;
     }
     case "review": {
-      const target = restList[0];
-      if (!target) throw new Error("Usage: tabelog review <url|id>");
-      const useType = str(flagMap["use-type"]);
-      if (useType !== undefined && !isUseType(useType)) {
-        throw new Error(`--use-type must be one of ${USE_TYPE_LIST.join(", ")}.`);
-      }
-      const result = await review(target, {
+      const result = await review(targetOf(restList, "tabelog review <url|id>"), {
         page: num(flagMap.page, "page"),
-        useType,
+        useType: choice(flagMap["use-type"], "use-type", USE_TYPE_LIST, isUseType),
         byVisit: flagMap["by-visit"] === true,
-        locale: localeOf(flagMap.locale),
+        locale,
       });
       emit(json, result, renderReview(result));
+      break;
+    }
+    case "menu": {
+      const result = await menu(
+        targetOf(restList, "tabelog menu <url|id>"),
+        choice(flagMap.kind, "kind", MENU_KIND_LIST, isMenuKind) ?? "food",
+        locale,
+      );
+      emit(json, result, renderMenu(result));
+      break;
+    }
+    case "rating": {
+      const result = await rating(targetOf(restList, "tabelog rating <url|id>"), locale);
+      emit(json, result, renderRating(result));
+      break;
+    }
+    case "photo": {
+      const result = await photo(targetOf(restList, "tabelog photo <url|id>"), {
+        page: num(flagMap.page, "page"),
+        mode: choice(flagMap.mode, "mode", PHOTO_MODE_LIST, isPhotoMode),
+        locale,
+      });
+      emit(json, result, renderPhoto(result));
+      break;
+    }
+    case "vacancy": {
+      const result = await vacancy(targetOf(restList, "tabelog vacancy <url|id>"), {
+        date: str(flagMap.date),
+        time: str(flagMap.time),
+        people: num(flagMap.people, "people"),
+      });
+      emit(json, result, renderVacancy(result));
       break;
     }
     case "suggest": {

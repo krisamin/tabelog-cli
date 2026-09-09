@@ -1,6 +1,7 @@
+import { type HourGroup, parseHourList } from "../hour";
 import { classText, decodeEntity, jsonLdList, textOf, toNumber } from "../html";
 import { fetchHtml, type Locale } from "../http";
-import { detailUrl, resolveRestaurant } from "../url";
+import { detailUrl, type RestaurantRef, resolveRestaurant } from "../url";
 
 /**
  * A restaurant page carries two machine-friendly layers: a schema.org
@@ -30,6 +31,8 @@ export interface Detail {
   latitude: number | undefined;
   longitude: number | undefined;
   imageUrl: string | undefined;
+  /** Structured business hours, parsed from the English page only (empty on other locales). */
+  hourList: HourGroup[];
   infoList: InfoRow[];
 }
 
@@ -94,8 +97,7 @@ const parseInfoTable = (html: string): InfoRow[] => {
   return rowList;
 };
 
-export const detail = async (input: string, locale: Locale): Promise<Detail> => {
-  const ref = await resolveRestaurant(input);
+export const detailOf = async (ref: RestaurantRef, locale: Locale): Promise<Detail> => {
   const url = detailUrl(ref, locale);
   const { body } = await fetchHtml(url);
 
@@ -121,6 +123,11 @@ export const detail = async (input: string, locale: Locale): Promise<Detail> => 
     latitude: typeof ld?.geo?.latitude === "number" ? ld.geo.latitude : undefined,
     longitude: typeof ld?.geo?.longitude === "number" ? ld.geo.longitude : undefined,
     imageUrl: asString(ld?.image) === undefined ? undefined : decodeEntity(ld?.image ?? ""),
+    hourList: locale === "en" ? parseHourList(body) : [],
     infoList,
   };
+};
+
+export const detail = async (input: string, locale: Locale): Promise<Detail> => {
+  return detailOf(await resolveRestaurant(input), locale);
 };

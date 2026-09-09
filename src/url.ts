@@ -62,3 +62,40 @@ export const reviewListUrl = (
   }
   return `${localeUrl(locale, `${ref.path}/dtlrvwlst/`)}?${query.toString()}`;
 };
+
+export const MENU_KIND_LIST = ["food", "lunch", "drink"] as const;
+export type MenuKind = (typeof MENU_KIND_LIST)[number];
+
+/** /dtlmenu/ is the food menu; lunch and drink hang under it. Course pages 404 on the inbound site. */
+export const menuUrl = (ref: RestaurantRef, locale: Locale, kind: MenuKind): string => {
+  return localeUrl(locale, `${ref.path}/dtlmenu/${kind === "food" ? "" : `${kind}/`}`);
+};
+
+export const ratingUrl = (ref: RestaurantRef, locale: Locale): string => {
+  return localeUrl(locale, `${ref.path}/dtlratings/`);
+};
+
+export const PHOTO_MODE_LIST = ["all", "owner", "user"] as const;
+export type PhotoMode = (typeof PHOTO_MODE_LIST)[number];
+
+/** The list layout paginates with ?PG=; the grid layout (smp2) uses different markup and is not read. */
+export const photoUrl = (ref: RestaurantRef, locale: Locale, option: { page: number; mode: PhotoMode }): string => {
+  const query = new URLSearchParams();
+  if (option.page > 1) query.set("PG", String(option.page));
+  if (option.mode !== "all") query.set("mode", option.mode);
+  const base = localeUrl(locale, `${ref.path}/dtlphotolst/`);
+  const text = query.toString();
+  return text ? `${base}?${text}` : base;
+};
+
+/** The booking calendar endpoints the reservation modal calls. All take rst_id plus svd/svps/svt. */
+export const bookingUrl = (
+  endpoint: "find_vacancy_date_with_status" | "find_vacancy" | "find_vacancy_member_by_date",
+  query: Record<string, string>,
+): string => {
+  return `${localeUrl("en", `booking/calendar/${endpoint}/`)}?${new URLSearchParams(query).toString()}`;
+};
+
+export const absoluteUrl = (pathOrUrl: string): string => {
+  return pathOrUrl.startsWith("http") ? pathOrUrl : `${BASE_URL}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`;
+};

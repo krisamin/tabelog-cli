@@ -1,6 +1,6 @@
 {
   "name": "@krisamin/tabelog-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Tabelog CLI and MCP server: search restaurants, read details and reviews without a browser",
   "license": "MIT",
   "author": "krisamin",
