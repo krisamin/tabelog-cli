@@ -223,6 +223,8 @@ const enrich = async (itemList: SearchItem[], option: EnrichOption): Promise<Sea
       const hasGeo = page.latitude !== undefined && page.longitude !== undefined;
       return {
         ...item,
+        latitude: page.latitude,
+        longitude: page.longitude,
         distanceM:
           option.near && hasGeo
             ? distanceM(option.near.point, { latitude: page.latitude as number, longitude: page.longitude as number })

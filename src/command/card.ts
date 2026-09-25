@@ -24,6 +24,9 @@ export interface SearchItem {
   featureList: string[];
   /** Filled when `near` was given. */
   distanceM: number | undefined;
+  /** The restaurant's own coordinates, filled whenever its detail page was read (near, openAt, room/parking filters). */
+  latitude?: number;
+  longitude?: number;
   /** Filled when `openAt` was given. */
   openStatus: OpenStatus | undefined;
   hourList: HourGroup[] | undefined;
